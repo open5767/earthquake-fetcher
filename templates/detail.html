@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}{{ event.place }} - 地震详情{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/">看板</a> / <a href="/events">事件列表</a> / {{ event.event_id }}
+</div>
+
+<div class="detail-grid">
+    <!-- 左侧: 详情 -->
+    <div class="panel">
+        <h2>&#x26a0; {{ event.place }}</h2>
+        <table class="detail-table">
+            <tr><td class="dt-label">事件 ID</td><td>{{ event.event_id }}</td></tr>
+            <tr><td class="dt-label">发震时刻</td><td>{{ event.time }}</td></tr>
+            <tr><td class="dt-label">震级</td><td><span class="badge badge-m{{ event.magnitude|int }}">M{{ event.magnitude }}</span> ({{ event.mag_type }})</td></tr>
+            <tr><td class="dt-label">震源深度</td><td>{{ event.depth_km }} km</td></tr>
+            <tr><td class="dt-label">震中位置</td><td>经度 {{ event.longitude }}, 纬度 {{ event.latitude }}</td></tr>
+            <tr><td class="dt-label">数据来源</td><td>{{ event.source }}</td></tr>
+            {% if event.felt %}<tr><td class="dt-label">有感报告</td><td>{{ event.felt }} 人</td></tr>{% endif %}
+            {% if event.cdi %}<tr><td class="dt-label">社区烈度 (CDI)</td><td>{{ event.cdi }}</td></tr>{% endif %}
+            {% if event.mmi %}<tr><td class="dt-label">仪器烈度 (MMI)</td><td>{{ event.mmi }}</td></tr>{% endif %}
+            {% if event.alert %}<tr><td class="dt-label">警报级别</td><td>{{ event.alert }}</td></tr>{% endif %}
+            <tr><td class="dt-label">海啸预警</td><td>{{ '是' if event.tsunami else '否' }}</td></tr>
+            <tr><td class="dt-label">显著性</td><td>{{ event.significance }}</td></tr>
+            {% if event.url %}<tr><td class="dt-label">详情页</td><td><a href="{{ event.url }}" target="_blank">USGS 事件页</a></td></tr>{% endif %}
+        </table>
+    </div>
+
+    <!-- 右侧: 地图 -->
+    <div class="panel">
+        <h3>&#x1f5fa; 震中位置</h3>
+        <div id="detail-map" style="height:400px; border-radius:8px;"></div>
+    </div>
+</div>
+
+<div style="margin-top:12px;">
+    <button class="btn btn-danger btn-sm" onclick="deleteThis()">删除此事件</button>
+    <a href="/events" class="btn btn-secondary btn-sm">返回列表</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    var lat = {{ event.latitude }};
+    var lon = {{ event.longitude }};
+    var map = L.map('detail-map').setView([lat, lon], 6);
+
+    (async function setupTile() {
+        var tileUrl, tileOptions;
+        try {
+            var ts = await fetch('/api/tile-status');
+            var tileStatus = await ts.json();
+            if (tileStatus.available) {
+                tileUrl = '/tiles/{z}/{x}/{y}.png';
+                tileOptions = { attribution: '&copy; OpenStreetMap (本地缓存)', maxZoom: 16 };
+            } else {
+                throw new Error('no cache');
+            }
+        } catch (e) {
+            tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+            tileOptions = { attribution: '&copy; OpenStreetMap (在线)', maxZoom: 16 };
+        }
+        L.tileLayer(tileUrl, tileOptions).addTo(map);
+    })();
+
+    L.marker([lat, lon]).addTo(map)
+      .bindPopup('<b>M{{ event.magnitude }}</b> {{ event.depth_km }}km<br>{{ event.place }}')
+      .openPopup();
+
+    async function deleteThis() {
+        if (!confirm('确认删除此事件?')) return;
+        await fetch('/api/events/{{ event.event_id }}', {method: 'DELETE'});
+        window.location.href = '/events';
+    }
+</script>
+{% endblock %}

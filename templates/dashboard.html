@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}数据看板 - 地震数据管理{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="stats-row" id="stats-row">
+    <div class="stat-card">
+        <div class="stat-value" id="stat-total">--</div>
+        <div class="stat-label">地震事件总数</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-max-mag">--</div>
+        <div class="stat-label">最大震级</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-min-mag">--</div>
+        <div class="stat-label">最小震级</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-avg-depth">--</div>
+        <div class="stat-label">平均震源深度 (km)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-latest">--</div>
+        <div class="stat-label">最近事件时间</div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- 地图 -->
+    <div class="panel map-panel">
+        <h3>&#x1f5fa; 地震分布图</h3>
+        <div id="map" style="height:450px; border-radius:8px;"></div>
+    </div>
+
+    <!-- 震级分布 -->
+    <div class="panel">
+        <h3>&#x1f4ca; 震级分布</h3>
+        <div id="mag-dist">
+
+        </div>
+    </div>
+</div>
+
+<!-- 最近事件 -->
+<div class="panel">
+    <h3>&#x1f553; 最近地震事件</h3>
+    <table class="table" id="recent-table">
+        <thead>
+            <tr>
+                <th>时间</th><th>震级</th><th>深度 (km)</th><th>地点</th><th>操作</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ---- 加载统计数据 ----
+    async function loadStats() {
+        const resp = await fetch('/api/stats');
+        const s = await resp.json();
+        document.getElementById('stat-total').textContent = s.total || 0;
+        document.getElementById('stat-max-mag').textContent = 'M' + (s.max_mag || 0);
+        document.getElementById('stat-min-mag').textContent = 'M' + (s.min_mag || 0);
+        document.getElementById('stat-avg-depth').textContent = s.avg_depth || 0;
+        if (s.latest_event_time) {
+            document.getElementById('stat-latest').textContent = s.latest_event_time.slice(0, 16);
+        } else {
+            document.getElementById('stat-latest').textContent = '无数据';
+        }
+
+        // 震级分布
+        if (s.mag_distribution) {
+            const d = s.mag_distribution;
+            document.getElementById('mag-dist').innerHTML = `
+                <div class="dist-bar"><span class="dist-label">M ≥ 7.0</span>
+                    <div class="dist-fill" style="width:${Math.max(d.m7plus*10, 2)}%">${d.m7plus}</div></div>
+                <div class="dist-bar"><span class="dist-label">M 6.0~6.9</span>
+                    <div class="dist-fill" style="width:${Math.max(d.m6_7*10, 2)}%">${d.m6_7}</div></div>
+                <div class="dist-bar"><span class="dist-label">M 5.0~5.9</span>
+                    <div class="dist-fill" style="width:${Math.max(d.m5_6*10, 2)}%">${d.m5_6}</div></div>
+                <div class="dist-bar"><span class="dist-label">M 4.0~4.9</span>
+                    <div class="dist-fill" style="width:${Math.max(d.m4_5*10, 2)}%">${d.m4_5}</div></div>
+                <div class="dist-bar"><span class="dist-label">M &lt; 4.0</span>
+                    <div class="dist-fill" style="width:${Math.max(d.m3minus*10, 2)}%">${d.m3minus}</div></div>
+            `;
+        }
+    }
+
+    // ---- 加载地图 ----
+    async function loadMap() {
+        const resp = await fetch('/api/map?min_mag=3');
+        const events = await resp.json();
+
+        const map = L.map('map').setView([25, 105], 3);
+
+        // 优先使用本地缓存瓦片(内网离线)，不可用时回退在线 OSM
+        let tileUrl, tileOptions;
+        try {
+            const ts = await fetch('/api/tile-status');
+            const tileStatus = await ts.json();
+            if (tileStatus.available) {
+                tileUrl = '/tiles/{z}/{x}/{y}.png';
+                tileOptions = {
+                    attribution: '&copy; OpenStreetMap (本地缓存)',
+                    maxZoom: 12,
+                };
+                console.log('地图: 离线模式 (' + tileStatus.count + ' 个本地瓦片)');
+            } else {
+                throw new Error('no cache');
+            }
+        } catch (e) {
+            tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+            tileOptions = {
+                attribution: '&copy; OpenStreetMap (在线)',
+                maxZoom: 12,
+            };
+            console.log('地图: 在线模式');
+        }
+        L.tileLayer(tileUrl, tileOptions).addTo(map);
+
+        events.forEach(e => {
+            const size = Math.max(6, e.magnitude * 5);
+            const color = e.magnitude >= 7 ? '#d32f2f' :
+                          e.magnitude >= 6 ? '#f57c00' :
+                          e.magnitude >= 5 ? '#fbc02d' :
+                          e.magnitude >= 4 ? '#388e3c' : '#1976d2';
+            L.circleMarker([e.latitude, e.longitude], {
+                radius: size,
+                fillColor: color,
+                color: '#fff',
+                weight: 1,
+                fillOpacity: 0.7,
+            }).addTo(map)
+              .bindPopup(`<b>M${e.magnitude}</b> ${e.depth_km}km<br>${e.place}<br>${e.time.slice(0, 19)}`);
+        });
+    }
+
+    // ---- 最近事件表 ----
+    async function loadRecent() {
+        const resp = await fetch('/api/events?per_page=10&sort_by=time&sort_dir=desc');
+        const data = await resp.json();
+        const tbody = document.querySelector('#recent-table tbody');
+        tbody.innerHTML = data.data.map(e => `
+            <tr>
+                <td>${e.time.slice(0, 19)}</td>
+                <td><span class="badge badge-m${Math.floor(e.magnitude)}">M${e.magnitude}</span></td>
+                <td>${e.depth_km}</td>
+                <td><a href="/events/${e.event_id}">${e.place}</a></td>
+                <td><button class="btn btn-xs btn-danger" onclick="deleteEvent('${e.event_id}')">删除</button></td>
+            </tr>
+        `).join('');
+    }
+
+    async function deleteEvent(eventId) {
+        if (!confirm('确认删除此事件?')) return;
+        const resp = await fetch('/api/events/' + eventId, {method: 'DELETE'});
+        const r = await resp.json();
+        if (r.ok) location.reload();
+    }
+
+    // ---- init ----
+    loadStats();
+    loadMap();
+    loadRecent();
+</script>
+{% endblock %}

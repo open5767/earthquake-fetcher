@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}地震数据管理{% endblock %}</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <span class="nav-icon">&#x1f30d;</span>
+            仿真数据获取模块
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">数据看板</a>
+            <a href="/events" class="nav-link">事件列表</a>
+            <button class="btn btn-sm btn-primary" onclick="triggerFetch()" id="fetch-btn">
+                拉取最新数据
+            </button>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- 拉取弹窗 -->
+    <div class="modal-overlay" id="fetch-modal" style="display:none">
+        <div class="modal">
+            <h3>从 USGS 拉取地震数据</h3>
+            <div class="form-group">
+                <label>时间范围 (最近 N 天)</label>
+                <input type="number" id="fetch-days" value="7" min="1" max="90">
+            </div>
+            <div class="form-group">
+                <label>最小震级</label>
+                <input type="number" id="fetch-min-mag" value="4.5" min="0" max="9" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>区域</label>
+                <select id="fetch-region">
+                    <option value="global">全球</option>
+                    <option value="china">中国周边</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeFetchModal()">取消</button>
+                <button class="btn btn-primary" onclick="doFetch()" id="fetch-confirm-btn">开始拉取</button>
+            </div>
+            <div id="fetch-result" class="fetch-result" style="display:none"></div>
+        </div>
+    </div>
+
+    <script>
+        function triggerFetch() {
+            document.getElementById('fetch-modal').style.display = 'flex';
+            document.getElementById('fetch-result').style.display = 'none';
+        }
+        function closeFetchModal() {
+            document.getElementById('fetch-modal').style.display = 'none';
+        }
+        async function doFetch() {
+            const btn = document.getElementById('fetch-confirm-btn');
+            const resultEl = document.getElementById('fetch-result');
+            btn.disabled = true;
+            btn.textContent = '拉取中...';
+            resultEl.style.display = 'none';
+
+            try {
+                const resp = await fetch('/api/fetch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        days: parseInt(document.getElementById('fetch-days').value),
+                        min_mag: parseFloat(document.getElementById('fetch-min-mag').value),
+                        region: document.getElementById('fetch-region').value,
+                    })
+                });
+                const data = await resp.json();
+                resultEl.style.display = 'block';
+                if (data.ok) {
+                    resultEl.innerHTML = `<div class="alert alert-success">${data.message}</div>`;
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    resultEl.innerHTML = `<div class="alert alert-error">拉取失败</div>`;
+                }
+            } catch (err) {
+                resultEl.style.display = 'block';
+                resultEl.innerHTML = `<div class="alert alert-error">网络错误: ${err.message}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '开始拉取';
+            }
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

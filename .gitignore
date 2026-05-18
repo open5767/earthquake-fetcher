@@ -1,0 +1,8 @@
+__pycache__/
+*.db
+*.db-shm
+*.db-wal
+output/
+static/tiles/
+*.pyc
+.env
