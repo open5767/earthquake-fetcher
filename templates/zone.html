@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}区域划分{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+    /* 底图切换控件 */
+    .basemap-switcher {
+        position: absolute; top: 8px; right: 8px; z-index: 1000;
+        background: #fff; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        overflow: hidden; display: flex; font-size: 12px;
+    }
+    .basemap-btn {
+        padding: 6px 12px; cursor: pointer; border: none; background: #fff;
+        color: #555; font-family: inherit; transition: all 0.15s;
+        border-right: 1px solid #eee;
+    }
+    .basemap-btn:last-child { border-right: none; }
+    .basemap-btn:hover { background: #f5f5f5; }
+    .basemap-btn.active { background: #C41230; color: #fff; font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="panel-title" style="margin-bottom:16px;">🗺 区域划分 — 行政区划 + 抗震设防等级</div>
+
+<div class="stats-row">
+    <div class="stat-card card-blue">
+        <div class="stat-value" id="stat-total">--</div>
+        <div class="stat-label">省级区域总数</div>
+    </div>
+    <div class="stat-card card-red">
+        <div class="stat-value val-red" id="stat-max-pga">--</div>
+        <div class="stat-label">最高设防烈度</div>
+    </div>
+    <div class="stat-card card-gold">
+        <div class="stat-value" id="stat-common-pga">--</div>
+        <div class="stat-label">最常见设防等级</div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- 区域地图 -->
+    <div class="panel map-panel" style="grid-column: 1 / -1;">
+        <div class="panel-title" style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+            <span>中国省级抗震设防区划图 &nbsp;<small style="color:#999;font-weight:400;">(GB 18306-2015 参考)</small></span>
+            <span style="font-size:11px;">
+                <span style="color:#D50000;">■ Ⅸ度</span>
+                <span style="color:#E53935;margin-left:4px;">■ Ⅷ度(0.30g)</span>
+                <span style="color:#F57C00;margin-left:4px;">■ Ⅷ度(0.20g)</span>
+                <span style="color:#F9A825;margin-left:4px;">■ Ⅶ度(0.15g)</span>
+                <span style="color:#43A047;margin-left:4px;">■ Ⅶ度(0.10g)</span>
+                <span style="color:#1E88E5;margin-left:4px;">■ Ⅵ度</span>
+            </span>
+        </div>
+        <div id="zone-map" style="height:480px; border-radius:4px; position:relative;">
+            <!-- 底图切换器 -->
+            <div class="basemap-switcher">
+                <button class="basemap-btn active" onclick="switchBasemap('admin', this)">行政图</button>
+                <button class="basemap-btn" onclick="switchBasemap('satellite', this)">卫星图</button>
+                <button class="basemap-btn" onclick="switchBasemap('terrain', this)">地形图</button>
+            </div>
+            <!-- 坐标 -->
+            <div style="position:absolute; bottom:4px; left:4px; z-index:1000;
+                        background:rgba(255,255,255,0.9); padding:4px 10px;
+                        border-radius:4px; font-size:11px; color:#555;
+                        font-family:Consolas,monospace; pointer-events:none;
+                        box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+                <span id="coord-display">经度 --.---- &nbsp; 纬度 --.----</span>
+                <span style="color:#999; margin-left:6px;">| WGS84</span>
+            </div>
+            <!-- 悬停信息提示 -->
+            <div id="hover-info" style="display:none; position:absolute; top:8px; left:8px; z-index:1000;
+                        background:rgba(0,0,0,0.8); color:#fff; padding:8px 14px; border-radius:4px;
+                        font-size:13px; pointer-events:none; white-space:nowrap;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 说明面板 -->
+<div class="panel" style="background:#fafbff;">
+    <div class="panel-title" style="cursor:pointer;display:flex;justify-content:space-between;"
+         onclick="var el=document.getElementById('help-content');el.style.display=el.style.display==='none'?'block':'none'">
+        <span>📖 什么是抗震设防烈度？ <small style="color:#999;font-weight:400;">点击展开/收起</small></span>
+        <span style="color:#888;">▼</span>
+    </div>
+    <div id="help-content" style="display:none; font-size:13px; line-height:2; color:#555;">
+        <p><strong>抗震设防烈度</strong>是一个地区建筑抗震设计的核心参数，表示该地区在未来50年内可能遭遇的<strong>最大地震影响程度</strong>。</p>
+        <table style="margin:10px 0;border-collapse:collapse;width:100%;font-size:12px;">
+            <tr style="background:#f0f0f0;">
+                <th style="padding:6px 10px;border:1px solid #ddd;">设防烈度</th>
+                <th style="padding:6px 10px;border:1px solid #ddd;">峰值加速度</th>
+                <th style="padding:6px 10px;border:1px solid #ddd;">地震影响</th>
+                <th style="padding:6px 10px;border:1px solid #ddd;">典型现象</th>
+                <th style="padding:6px 10px;border:1px solid #ddd;">代表地区</th>
+            </tr>
+            <tr><td style="padding:5px 10px;border:1px solid #eee;color:#1E88E5;">Ⅵ度</td><td style="padding:5px 10px;border:1px solid #eee;">0.05g</td><td style="padding:5px 10px;border:1px solid #eee;">轻微</td><td style="padding:5px 10px;border:1px solid #eee;">门窗作响，悬挂物摆动</td><td style="padding:5px 10px;border:1px solid #eee;color:#1E88E5;">湖南、江西、贵州、广西</td></tr>
+            <tr><td style="padding:5px 10px;border:1px solid #eee;color:#43A047;">Ⅶ度</td><td style="padding:5px 10px;border:1px solid #eee;">0.10g/0.15g</td><td style="padding:5px 10px;border:1px solid #eee;">中等</td><td style="padding:5px 10px;border:1px solid #eee;">房屋摇晃，少数轻微损坏</td><td style="padding:5px 10px;border:1px solid #eee;color:#43A047;">上海、江苏、广东、湖北</td></tr>
+            <tr><td style="padding:5px 10px;border:1px solid #eee;color:#F57C00;">Ⅷ度</td><td style="padding:5px 10px;border:1px solid #eee;">0.20g/0.30g</td><td style="padding:5px 10px;border:1px solid #eee;">严重</td><td style="padding:5px 10px;border:1px solid #eee;">房屋结构受损，地表裂缝</td><td style="padding:5px 10px;border:1px solid #eee;color:#F57C00;">北京、天津、四川、云南</td></tr>
+            <tr><td style="padding:5px 10px;border:1px solid #eee;color:#D50000;">Ⅸ度</td><td style="padding:5px 10px;border:1px solid #eee;">0.40g</td><td style="padding:5px 10px;border:1px solid #eee;">毁灭</td><td style="padding:5px 10px;border:1px solid #eee;">多数房屋严重破坏，地面大规模变形</td><td style="padding:5px 10px;border:1px solid #eee;color:#D50000;">台湾、川西(局部)</td></tr>
+        </table>
+        <p><strong>依据</strong>：GB 18306-2015《中国地震动参数区划图》— 国家强制性标准。建筑按设防烈度设计，目标"小震不坏、中震可修、大震不倒"。</p>
+        <p><strong>烈度 ≠ 震级</strong>：震级衡量地震能量（一次地震一个震级），烈度衡量地面影响（离震中越远烈度越低）。设防烈度是提前规定"这个地区的建筑须抵抗多大烈度的地震"。</p>
+    </div>
+</div>
+
+<!-- 区域列表 -->
+<div class="panel">
+    <div class="filter-row" style="margin-bottom:10px;">
+        <div class="form-group">
+            <label>区域搜索</label>
+            <input type="text" id="filter-name" placeholder="输入省份名..." oninput="doSearch()">
+        </div>
+        <div class="form-group">
+            <label>最低设防烈度</label>
+            <select id="filter-pga" onchange="doSearch()">
+                <option value="">全部</option>
+                <option value="0.40">Ⅸ度及以上</option>
+                <option value="0.30">Ⅷ度及以上</option>
+                <option value="0.20">Ⅷ度(0.20g)及以上</option>
+                <option value="0.15">Ⅶ度及以上</option>
+                <option value="0.10">Ⅶ度(0.10g)及以上</option>
+            </select>
+        </div>
+        <span class="total-info">共 <strong id="total-count">0</strong> 个区域 &nbsp;|&nbsp;
+            <button class="btn btn-xs btn-primary" onclick="clearHighlight()">取消高亮</button>
+        </span>
+    </div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>区域名称</th><th>英文名</th>
+                <th>抗震设防烈度</th><th>PGA(g)</th><th>地震带</th><th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="zone-tbody"></tbody>
+    </table>
+    <div class="pagination" id="pagination"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.CURRENT_MODULE = 'zone';
+    var map;
+    var zoneLayer;
+    var allZoneData = {};  // zone_id → zone record + leaflet layers
+    var highlightedLayer = null;
+    var basemapLayer;
+    var currentBasemap = 'admin';
+
+    var PGA_COLORS = {
+        0.40: '#D50000', 0.30: '#E53935', 0.20: '#F57C00',
+        0.15: '#F9A825',  0.10: '#43A047', 0.05: '#1E88E5',
+    };
+
+    var BASEMAPS = {
+        admin: {
+            url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            attr: '&copy; OpenStreetMap', maxZoom: 10,
+        },
+        satellite: {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr: 'Esri, Maxar, Earthstar Geographics', maxZoom: 14,
+        },
+        terrain: {
+            url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+            attr: '&copy; OpenTopoMap', maxZoom: 12,
+        },
+    };
+
+    function switchBasemap(type, btn) {
+        currentBasemap = type;
+        document.querySelectorAll('.basemap-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        if (basemapLayer) map.removeLayer(basemapLayer);
+        var cfg = BASEMAPS[type];
+        basemapLayer = L.tileLayer(cfg.url, {attribution: cfg.attr, maxZoom: cfg.maxZoom}).addTo(map);
+        basemapLayer.setZIndex(0);  // 底图在最底层
+    }
+
+    async function initMap() {
+        map = L.map('zone-map').setView([35, 105], 4);
+        zoneLayer = L.layerGroup().addTo(map);
+        zoneLayer.setZIndex(10);
+
+        var cfg = BASEMAPS['admin'];
+        basemapLayer = L.tileLayer(cfg.url, {attribution: cfg.attr, maxZoom: cfg.maxZoom}).addTo(map);
+
+        map.on('mousemove', function(e) {
+            document.getElementById('coord-display').innerHTML =
+                '经度 ' + e.latlng.lng.toFixed(4) + ' &nbsp; 纬度 ' + e.latlng.lat.toFixed(4);
+        });
+
+        await loadZoneMap();
+    }
+
+    async function loadZoneMap() {
+        zoneLayer.clearLayers();
+        allZoneData = {};
+
+        var resp = await fetch('/api/zone/list?per_page=50');
+        var data = await resp.json();
+
+        data.data.forEach(function(z) {
+            if (!z.coordinates_json || z.coordinates_json === '') return;
+            try {
+                var geom = JSON.parse(z.coordinates_json);
+                var color = PGA_COLORS[z.seismic_pga] || '#90A4AE';
+                var layers = [];
+                var zoneEntry = { record: z, layers: [] };
+
+                function addPolygon(coords) {
+                    var latlngs = coords[0].map(function(p) { return [p[1], p[0]]; });
+                    if (latlngs.length < 3) return;
+
+                    var poly = L.polygon(latlngs, {
+                        color: color, weight: 2, opacity: 0.9,
+                        fillColor: color, fillOpacity: 0.3,
+                        className: 'zone-polygon',
+                    }).addTo(zoneLayer);
+
+                    // 悬停: 显示信息 + 临时提亮
+                    poly.on('mouseover', function(e) {
+                        var info = document.getElementById('hover-info');
+                        info.style.display = 'block';
+                        info.innerHTML = '<b>' + z.name + '</b> &nbsp; ' +
+                            (z.seismic_intensity || '') + ' &nbsp; ' +
+                            (z.seismic_desc || '');
+                        poly.setStyle({ fillOpacity: 0.6, weight: 3 });
+                        L.DomEvent.stopPropagation(e);
+                    });
+                    poly.on('mouseout', function() {
+                        document.getElementById('hover-info').style.display = 'none';
+                        // 如果不是高亮状态，恢复
+                        if (highlightedLayer !== poly) {
+                            poly.setStyle({ fillOpacity: 0.3, weight: 2 });
+                        }
+                    });
+
+                    // 点击: 高亮
+                    poly.on('click', function() {
+                        highlightZone(z, poly);
+                    });
+
+                    layers.push(poly);
+                }
+
+                if (geom.type === 'Polygon') {
+                    addPolygon(geom.coordinates);
+                } else if (geom.type === 'MultiPolygon') {
+                    geom.coordinates.forEach(addPolygon);
+                }
+
+                zoneEntry.layers = layers;
+                allZoneData[z.zone_id] = zoneEntry;
+            } catch(e) {}
+        });
+    }
+
+    function highlightZone(z, poly) {
+        // 先取消之前的高亮
+        clearHighlight();
+
+        highlightedLayer = poly;
+        var color = PGA_COLORS[z.seismic_pga] || '#90A4AE';
+
+        poly.setStyle({
+            fillOpacity: 0.7,
+            weight: 4,
+            color: '#000',
+            fillColor: '#FFD54F',  // 金色提亮
+            dashArray: '',
+        });
+        poly.bringToFront();
+
+        // 同时更新悬停提示为选中状态
+        var info = document.getElementById('hover-info');
+        info.style.display = 'block';
+        info.innerHTML = '✅ <b>' + z.name + '</b> &nbsp; ' +
+            (z.seismic_intensity || '') + ' &nbsp; ' + (z.seismic_desc || '');
+        info.style.background = 'rgba(196,18,48,0.9)';
+
+        // 地图定位到该省
+        map.fitBounds(poly.getBounds(), {padding: [40, 40], maxZoom: 7});
+    }
+
+    function clearHighlight() {
+        if (highlightedLayer) {
+            // 找到对应区域的原始颜色
+            for (var id in allZoneData) {
+                var entry = allZoneData[id];
+                for (var i = 0; i < entry.layers.length; i++) {
+                    if (entry.layers[i] === highlightedLayer || entry.layers[i]._leaflet_id === (highlightedLayer._leaflet_id)) {
+                        var color = PGA_COLORS[entry.record.seismic_pga] || '#90A4AE';
+                        highlightedLayer.setStyle({
+                            fillOpacity: 0.3, weight: 2, color: color,
+                            fillColor: color, dashArray: null,
+                        });
+                        break;
+                    }
+                }
+            }
+            highlightedLayer = null;
+        }
+        var info = document.getElementById('hover-info');
+        info.style.display = 'none';
+        info.style.background = 'rgba(0,0,0,0.8)';
+    }
+
+    // 表格行点击 → 高亮地图
+    function selectFromTable(zoneId) {
+        var entry = allZoneData[zoneId];
+        if (!entry || entry.layers.length === 0) return;
+        highlightZone(entry.record, entry.layers[0]);
+        // 滚动到地图
+        document.getElementById('zone-map').scrollIntoView({behavior: 'smooth'});
+    }
+
+    // ---- 统计 ----
+    async function loadStats() {
+        var resp = await fetch('/api/zone/stats');
+        var s = await resp.json();
+        document.getElementById('stat-total').textContent = s.total || 0;
+
+        if (s.pga_distribution) {
+            var keys = Object.keys(s.pga_distribution);
+            if (keys.length > 0) {
+                document.getElementById('stat-max-pga').textContent = keys[0];
+                document.getElementById('stat-common-pga').textContent =
+                    keys.reduce(function(a,b){return s.pga_distribution[a]>s.pga_distribution[b]?a:b;});
+            }
+        }
+    }
+
+    // ---- 列表 ----
+    var currentPage = 1;
+    async function doSearch(page) {
+        if (page) currentPage = page;
+        var params = new URLSearchParams({page: currentPage, per_page: 50});
+        var name = document.getElementById('filter-name').value;
+        var pga = document.getElementById('filter-pga').value;
+        if (name) params.set('name', name);
+        if (pga) params.set('pga_min', pga);
+
+        var resp = await fetch('/api/zone/list?' + params);
+        var data = await resp.json();
+        document.getElementById('total-count').textContent = data.total;
+
+        document.getElementById('zone-tbody').innerHTML = data.data.map(function(z) {
+            var pgaColor = PGA_COLORS[z.seismic_pga] || '#999';
+            return '<tr style="cursor:pointer;" onclick="selectFromTable(\'' + z.zone_id + '\')" '
+                + 'onmouseover="this.style.background=\'#FFF8F6\'" onmouseout="this.style.background=\'\'">'
+                + '<td><strong>' + z.name + '</strong></td>'
+                + '<td style="font-size:12px;color:#888;">' + (z.name_en || '-') + '</td>'
+                + '<td><span style="color:' + pgaColor + ';font-weight:700;">' + (z.seismic_intensity || '-') + '</span></td>'
+                + '<td>' + (z.seismic_pga != null ? z.seismic_pga.toFixed(2) : '-') + '</td>'
+                + '<td style="font-size:12px;">' + (z.seismic_desc || '-') + '</td>'
+                + '<td><button class="btn btn-xs btn-danger" onclick="event.stopPropagation();del(\'' + z.zone_id + '\')">删除</button></td>'
+                + '</tr>';
+        }).join('');
+
+        var html = '';
+        for (var i = 1; i <= data.total_pages; i++) {
+            html += '<button class="btn btn-xs ' + (i === data.page ? 'btn-primary' : 'btn-secondary') +
+                    '" onclick="doSearch(' + i + ')">' + i + '</button>';
+        }
+        document.getElementById('pagination').innerHTML = html;
+    }
+
+    async function del(id) {
+        if (!confirm('确认删除?')) return;
+        await fetch('/api/zone/' + encodeURIComponent(id), {method:'DELETE'});
+        location.reload();
+    }
+
+    initMap();
+    loadStats();
+    doSearch(1);
+</script>
+{% endblock %}

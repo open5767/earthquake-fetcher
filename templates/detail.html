@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ event.place }} - 地震详情{% endblock %}
+{% block title %}{{ event.place or '事件详情' }}{% endblock %}
 
 {% block head %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -7,38 +7,140 @@
 
 {% block content %}
 <div class="breadcrumb">
-    <a href="/">看板</a> / <a href="/events">事件列表</a> / {{ event.event_id }}
+    <a href="/">数据看板</a> / <a href="/events">事件列表</a> / {{ event.event_id }}
 </div>
 
 <div class="detail-grid">
-    <!-- 左侧: 详情 -->
+    <!-- 左侧: 事件详情 -->
     <div class="panel">
-        <h2>&#x26a0; {{ event.place }}</h2>
+        <div class="panel-title">地震事件详情</div>
         <table class="detail-table">
-            <tr><td class="dt-label">事件 ID</td><td>{{ event.event_id }}</td></tr>
-            <tr><td class="dt-label">发震时刻</td><td>{{ event.time }}</td></tr>
-            <tr><td class="dt-label">震级</td><td><span class="badge badge-m{{ event.magnitude|int }}">M{{ event.magnitude }}</span> ({{ event.mag_type }})</td></tr>
-            <tr><td class="dt-label">震源深度</td><td>{{ event.depth_km }} km</td></tr>
-            <tr><td class="dt-label">震中位置</td><td>经度 {{ event.longitude }}, 纬度 {{ event.latitude }}</td></tr>
-            <tr><td class="dt-label">数据来源</td><td>{{ event.source }}</td></tr>
-            {% if event.felt %}<tr><td class="dt-label">有感报告</td><td>{{ event.felt }} 人</td></tr>{% endif %}
-            {% if event.cdi %}<tr><td class="dt-label">社区烈度 (CDI)</td><td>{{ event.cdi }}</td></tr>{% endif %}
-            {% if event.mmi %}<tr><td class="dt-label">仪器烈度 (MMI)</td><td>{{ event.mmi }}</td></tr>{% endif %}
-            {% if event.alert %}<tr><td class="dt-label">警报级别</td><td>{{ event.alert }}</td></tr>{% endif %}
-            <tr><td class="dt-label">海啸预警</td><td>{{ '是' if event.tsunami else '否' }}</td></tr>
-            <tr><td class="dt-label">显著性</td><td>{{ event.significance }}</td></tr>
-            {% if event.url %}<tr><td class="dt-label">详情页</td><td><a href="{{ event.url }}" target="_blank">USGS 事件页</a></td></tr>{% endif %}
+            <tr>
+                <td class="dt-label">事件编号</td>
+                <td class="dt-value">{{ event.event_id }}</td>
+            </tr>
+            <tr>
+                <td class="dt-label">发震时刻</td>
+                <td class="dt-value">{{ event.time }}</td>
+            </tr>
+            {% if event.report_time and event.report_time != 'None' %}
+            <tr>
+                <td class="dt-label">速报时间</td>
+                <td class="dt-value">{{ event.report_time }}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="dt-label">震　　级</td>
+                <td class="dt-value">
+                    <span class="badge badge-m{{ event.magnitude|int }}">M{{ event.magnitude }}</span>
+                    {% if event.mag_type %}({{ event.mag_type }}){% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td class="dt-label">震源深度</td>
+                <td class="dt-value">{{ event.depth_km }} 千米</td>
+            </tr>
+            <tr>
+                <td class="dt-label">参考位置</td>
+                <td class="dt-value" style="font-size:15px;font-weight:700;">{{ event.place or '未知' }}</td>
+            </tr>
+            <tr>
+                <td class="dt-label">震中经度</td>
+                <td class="dt-value">{{ event.longitude }}</td>
+            </tr>
+            <tr>
+                <td class="dt-label">震中纬度</td>
+                <td class="dt-value">{{ event.latitude }}</td>
+            </tr>
+            <tr>
+                <td class="dt-label">数据来源</td>
+                <td class="dt-value">
+                    {% if event.source == 'cenc' %}
+                    <span class="badge badge-src-cenc">中国地震台网 (CENC)</span>
+                    {% else %}
+                    <span class="badge badge-src-usgs">美国地质调查局 (USGS)</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% if event.event_type %}
+            <tr>
+                <td class="dt-label">事件类型</td>
+                <td class="dt-value">
+                    <span class="badge badge-event-type {{ 'badge-review' if event.event_type == '正式测定' else 'badge-auto' }}">{{ event.event_type }}</span>
+                </td>
+            </tr>
+            {% endif %}
+            {% if event.intensity_label %}
+            <tr>
+                <td class="dt-label">中国烈度</td>
+                <td class="dt-value">
+                    <span class="intensity-tag int-{{ event.intensity }}">{{ event.intensity_label }}</span>
+                </td>
+            </tr>
+            {% endif %}
+            {% if event.felt %}
+            <tr>
+                <td class="dt-label">有感报告</td>
+                <td class="dt-value">{{ event.felt }} 人</td>
+            </tr>
+            {% endif %}
+            {% if event.cdi %}
+            <tr>
+                <td class="dt-label">社区烈度 (CDI)</td>
+                <td class="dt-value">{{ event.cdi }}</td>
+            </tr>
+            {% endif %}
+            {% if event.mmi %}
+            <tr>
+                <td class="dt-label">仪器烈度 (MMI)</td>
+                <td class="dt-value">{{ event.mmi }}</td>
+            </tr>
+            {% endif %}
+            {% if event.alert %}
+            <tr>
+                <td class="dt-label">警报级别</td>
+                <td class="dt-value">{{ event.alert }}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="dt-label">海啸预警</td>
+                <td class="dt-value">{{ '是' if event.tsunami else '否' }}</td>
+            </tr>
+            {% if event.significance %}
+            <tr>
+                <td class="dt-label">事件显著性</td>
+                <td class="dt-value">{{ event.significance }}</td>
+            </tr>
+            {% endif %}
+            {% if event.url %}
+            <tr>
+                <td class="dt-label">详情链接</td>
+                <td class="dt-value"><a href="{{ event.url }}" target="_blank">查看详情</a></td>
+            </tr>
+            {% endif %}
         </table>
     </div>
 
-    <!-- 右侧: 地图 -->
+    <!-- 右侧: 震中地图 -->
     <div class="panel">
-        <h3>&#x1f5fa; 震中位置</h3>
-        <div id="detail-map" style="height:400px; border-radius:8px;"></div>
+        <div class="panel-title">震中位置</div>
+        <div id="detail-map" style="height:380px; border-radius:4px; position:relative;">
+            <div style="position:absolute; bottom:4px; left:4px; z-index:1000;
+                        background:rgba(255,255,255,0.9); padding:4px 10px;
+                        border-radius:4px; font-size:11px; color:#555;
+                        font-family:Consolas,monospace; pointer-events:none;
+                        box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+                <span id="coord-display">经度 --.---- &nbsp; 纬度 --.----</span>
+                <span style="color:#999; margin-left:6px;">| WGS84</span>
+            </div>
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:#888;text-align:center;">
+            经度: {{ event.longitude }} &nbsp; 纬度: {{ event.latitude }}
+        </div>
     </div>
 </div>
 
-<div style="margin-top:12px;">
+<div style="margin-top:12px; display:flex; gap:10px;">
     <button class="btn btn-danger btn-sm" onclick="deleteThis()">删除此事件</button>
     <a href="/events" class="btn btn-secondary btn-sm">返回列表</a>
 </div>
@@ -48,33 +150,33 @@
 <script>
     var lat = {{ event.latitude }};
     var lon = {{ event.longitude }};
-    var map = L.map('detail-map').setView([lat, lon], 6);
+    var map = L.map('detail-map').setView([lat, lon], 7);
 
-    (async function setupTile() {
-        var tileUrl, tileOptions;
-        try {
-            var ts = await fetch('/api/tile-status');
-            var tileStatus = await ts.json();
-            if (tileStatus.available) {
-                tileUrl = '/tiles/{z}/{x}/{y}.png';
-                tileOptions = { attribution: '&copy; OpenStreetMap (本地缓存)', maxZoom: 16 };
-            } else {
-                throw new Error('no cache');
-            }
-        } catch (e) {
-            tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-            tileOptions = { attribution: '&copy; OpenStreetMap (在线)', maxZoom: 16 };
-        }
-        L.tileLayer(tileUrl, tileOptions).addTo(map);
-    })();
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap', maxZoom: 14,
+    }).addTo(map);
+
+    map.on('mousemove', function(e) {
+        document.getElementById('coord-display').innerHTML =
+            '经度 ' + e.latlng.lng.toFixed(4) + ' &nbsp; 纬度 ' + e.latlng.lat.toFixed(4);
+    });
 
     L.marker([lat, lon]).addTo(map)
-      .bindPopup('<b>M{{ event.magnitude }}</b> {{ event.depth_km }}km<br>{{ event.place }}')
+      .bindPopup('<b>M{{ event.magnitude }}</b> &nbsp; {{ event.depth_km }}km<br>{{ event.place or "" }}')
       .openPopup();
 
+    // 震中圆圈
+    L.circle([lat, lon], {
+        radius: {{ event.magnitude }} * 8000,
+        color: '#C41230',
+        fillColor: '#C41230',
+        fillOpacity: 0.15,
+        weight: 1,
+    }).addTo(map);
+
     async function deleteThis() {
-        if (!confirm('确认删除此事件?')) return;
-        await fetch('/api/events/{{ event.event_id }}', {method: 'DELETE'});
+        if (!confirm('确认删除此地震事件?')) return;
+        await fetch('/api/eq/events/{{ event.event_id }}', {method: 'DELETE'});
         window.location.href = '/events';
     }
 </script>

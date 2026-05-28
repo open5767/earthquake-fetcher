@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}断层数据{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="panel-title" style="margin-bottom:16px;">🏔 中国主要活动断裂带</div>
+
+<div class="stats-row">
+    <div class="stat-card card-red">
+        <div class="stat-value val-red" id="stat-total">--</div>
+        <div class="stat-label">断层总数</div>
+    </div>
+    <div class="stat-card card-gold">
+        <div class="stat-value" id="stat-max-mag">--</div>
+        <div class="stat-label">最大潜在地震震级</div>
+    </div>
+    <div class="stat-card card-blue">
+        <div class="stat-value" id="stat-max-length">--</div>
+        <div class="stat-label">最长断裂带 (km)</div>
+    </div>
+    <div class="stat-card card-teal">
+        <div class="stat-value" id="stat-max-slip">--</div>
+        <div class="stat-label">最大滑动速率 (mm/yr)</div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- 断层分布图 -->
+    <div class="panel map-panel">
+        <div class="panel-title">活动断裂带分布</div>
+        <div id="fault-map" style="height:420px; border-radius:4px; position:relative;">
+            <div style="position:absolute; bottom:4px; left:4px; z-index:1000;
+                        background:rgba(255,255,255,0.9); padding:4px 10px;
+                        border-radius:4px; font-size:11px; color:#555;
+                        font-family:Consolas,monospace; pointer-events:none;
+                        box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+                <span id="coord-display">经度 --.---- &nbsp; 纬度 --.----</span>
+                <span style="color:#999; margin-left:6px;">| WGS84</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 断层类型分布 -->
+    <div class="panel">
+        <div class="panel-title">断层类型</div>
+        <div id="slip-dist"></div>
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title">断裂带参数列表</div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>名称</th><th>英文名</th><th>走向(°)</th><th>长度(km)</th>
+                <th>滑动类型</th><th>滑动速率(mm/yr)</th>
+                <th>活动时代</th><th>最大震级</th><th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="fault-tbody"></tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.CURRENT_MODULE = 'fault';
+
+    async function loadFaults() {
+        var resp = await fetch('/api/fault/list?per_page=50');
+        var data = await resp.json();
+
+        document.getElementById('stat-total').textContent = data.total;
+
+        if (data.data.length > 0) {
+            var maxMag = Math.max.apply(null, data.data.map(function(f) { return f.max_magnitude || 0; }));
+            var maxLen = Math.max.apply(null, data.data.map(function(f) { return f.length_km || 0; }));
+            var maxSlip = Math.max.apply(null, data.data.map(function(f) { return f.slip_rate || 0; }));
+            document.getElementById('stat-max-mag').textContent = 'M' + maxMag.toFixed(1);
+            document.getElementById('stat-max-length').textContent = maxLen.toFixed(0);
+            document.getElementById('stat-max-slip').textContent = maxSlip.toFixed(1);
+        }
+
+        // 表格
+        document.getElementById('fault-tbody').innerHTML = data.data.map(function(f) {
+            return '<tr>' +
+                '<td><strong>' + f.name + '</strong></td>' +
+                '<td style="font-size:12px;color:#888;">' + (f.name_en || '-') + '</td>' +
+                '<td>' + (f.strike != null ? f.strike + '°' : '-') + '</td>' +
+                '<td>' + (f.length_km != null ? f.length_km.toFixed(0) : '-') + '</td>' +
+                '<td><span class="badge badge-src-cenc">' + (f.slip_type || '-') + '</span></td>' +
+                '<td>' + (f.slip_rate != null ? f.slip_rate.toFixed(1) : '-') + '</td>' +
+                '<td>' + (f.activity_age || '-') + '</td>' +
+                '<td><span class="badge badge-m' + Math.floor(f.max_magnitude || 0) + '">M' + (f.max_magnitude || '-') + '</span></td>' +
+                '<td><button class="btn btn-xs btn-danger" onclick="delFault(\'' + f.fault_id + '\')">删除</button></td>' +
+                '</tr>';
+        }).join('');
+
+        // 滑动类型分布
+        var types = {};
+        data.data.forEach(function(f) { if (f.slip_type) types[f.slip_type] = (types[f.slip_type]||0) + 1; });
+        var html = '';
+        for (var t in types) {
+            html += '<div><span class="badge badge-src-cenc" style="margin:3px;">' + t + '</span> x' + types[t] + '</div>';
+        }
+        document.getElementById('slip-dist').innerHTML = html || '无数据';
+
+        // 地图
+        var map = L.map('fault-map').setView([32, 105], 4);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap', maxZoom: 10,
+        }).addTo(map);
+
+        map.on('mousemove', function(e) {
+            document.getElementById('coord-display').innerHTML =
+                '经度 ' + e.latlng.lng.toFixed(4) + ' &nbsp; 纬度 ' + e.latlng.lat.toFixed(4);
+        });
+
+        data.data.forEach(function(f) {
+            var len = f.length_km || 100;
+            var color = (f.slip_type||'').indexOf('逆') >= 0 ? '#C41230' :
+                        (f.slip_type||'').indexOf('走') >= 0 ? '#F57C00' : '#1A3A5C';
+            L.circleMarker([f.latitude, f.longitude], {
+                radius: Math.min(Math.max(len / 80, 6), 20),
+                fillColor: color, color: '#fff', weight: 1, fillOpacity: 0.7,
+            }).addTo(map)
+              .bindPopup('<b>' + f.name + '</b><br>' +
+                         (f.name_en ? f.name_en + '<br>' : '') +
+                         '滑动类型: ' + (f.slip_type || '-') + '<br>' +
+                         '长度: ' + (f.length_km||'-') + ' km<br>' +
+                         '滑动速率: ' + (f.slip_rate||'-') + ' mm/yr<br>' +
+                         '最大震级: M' + (f.max_magnitude||'-'));
+        });
+    }
+
+    async function delFault(id) {
+        if (!confirm('确认删除?')) return;
+        await fetch('/api/fault/' + encodeURIComponent(id), {method:'DELETE'});
+        location.reload();
+    }
+
+    loadFaults();
+</script>
+{% endblock %}

@@ -1,7 +1,14 @@
 {% extends "base.html" %}
-{% block title %}事件列表 - 地震数据管理{% endblock %}
+{% block title %}事件列表{% endblock %}
 
 {% block content %}
+<!-- 数据源切换标签 -->
+<div class="source-tabs">
+    <button class="source-tab active" onclick="switchSource('all', this)">全部数据</button>
+    <button class="source-tab" onclick="switchSource('cenc', this)">中国地震台网</button>
+    <button class="source-tab" onclick="switchSource('usgs', this)">USGS</button>
+</div>
+
 <div class="panel">
     <div class="filter-bar">
         <div class="filter-row">
@@ -23,11 +30,11 @@
             </div>
             <div class="form-group">
                 <label>地点搜索</label>
-                <input type="text" id="filter-place" placeholder="输入地名..." oninput="doSearch()">
+                <input type="text" id="filter-place" placeholder="输入地名关键词..." oninput="doSearch()">
             </div>
         </div>
         <div class="filter-actions">
-            <button class="btn btn-secondary btn-sm" onclick="resetFilters()">重置</button>
+            <button class="btn btn-secondary btn-sm" onclick="resetFilters()">重置筛选</button>
             <span class="total-info">共 <strong id="total-count">0</strong> 条记录</span>
         </div>
     </div>
@@ -37,68 +44,95 @@
     <table class="table">
         <thead>
             <tr>
-                <th><a href="#" onclick="setSort('time')">时间 ▾</a></th>
+                <th><a href="#" onclick="setSort('time')">发震时刻 ▾</a></th>
                 <th><a href="#" onclick="setSort('magnitude')">震级 ▾</a></th>
                 <th>震级类型</th>
-                <th><a href="#" onclick="setSort('depth_km')">深度 (km) ▾</a></th>
-                <th>地点</th>
+                <th><a href="#" onclick="setSort('depth_km')">深度(km) ▾</a></th>
+                <th>参考位置</th>
                 <th>经度</th>
                 <th>纬度</th>
-                <th><a href="#" onclick="setSort('significance')">显著性 ▾</a></th>
+                <th>中国烈度</th>
+                <th>数据来源</th>
+                <th>类型</th>
                 <th>操作</th>
             </tr>
         </thead>
         <tbody id="event-tbody"></tbody>
     </table>
-
     <div class="pagination" id="pagination"></div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-    let currentPage = 1;
-    let currentSort = 'time';
-    let currentSortDir = 'desc';
+    window.CURRENT_MODULE = 'earthquake';
+    var currentPage = 1;
+    var currentSort = 'time';
+    var currentSortDir = 'desc';
+    var currentSource = 'all';
 
-    async function doSearch(page = 1) {
-        currentPage = page;
-        const params = new URLSearchParams({
-            page: page,
+    function switchSource(src, el) {
+        currentSource = src;
+        document.querySelectorAll('.source-tab').forEach(function(t) { t.classList.remove('active'); });
+        if (el) el.classList.add('active');
+        doSearch(1);
+    }
+
+    async function doSearch(page) {
+        if (page) currentPage = page;
+        var params = new URLSearchParams({
+            page: currentPage,
             per_page: 20,
             sort_by: currentSort,
             sort_dir: currentSortDir,
-            min_mag: document.getElementById('filter-min-mag').value || '',
-            max_mag: document.getElementById('filter-max-mag').value || '',
-            start_time: document.getElementById('filter-start').value || '',
-            end_time: document.getElementById('filter-end').value || '',
-            place: document.getElementById('filter-place').value || '',
         });
+        var minMag = document.getElementById('filter-min-mag').value;
+        var maxMag = document.getElementById('filter-max-mag').value;
+        var start = document.getElementById('filter-start').value;
+        var end = document.getElementById('filter-end').value;
+        var place = document.getElementById('filter-place').value;
+        if (minMag) params.set('min_mag', minMag);
+        if (maxMag) params.set('max_mag', maxMag);
+        if (start) params.set('start_time', start);
+        if (end) params.set('end_time', end);
+        if (place) params.set('place', place);
+        if (currentSource !== 'all') params.set('source', currentSource);
 
-        const resp = await fetch('/api/events?' + params);
-        const data = await resp.json();
+        var resp = await fetch('/api/eq/events?' + params);
+        var data = await resp.json();
 
         document.getElementById('total-count').textContent = data.total;
 
-        document.getElementById('event-tbody').innerHTML = data.data.map(e => `
-            <tr>
-                <td>${e.time.slice(0, 19)}</td>
-                <td><span class="badge badge-m${Math.floor(e.magnitude)}">M${e.magnitude}</span></td>
-                <td>${e.mag_type}</td>
-                <td>${e.depth_km}</td>
-                <td><a href="/events/${e.event_id}">${e.place}</a></td>
-                <td>${e.longitude.toFixed(3)}</td>
-                <td>${e.latitude.toFixed(3)}</td>
-                <td>${e.significance}</td>
-                <td><button class="btn btn-xs btn-danger" onclick="deleteEvent('${e.event_id}')">删除</button></td>
-            </tr>
-        `).join('');
+        document.getElementById('event-tbody').innerHTML = data.data.map(function(e) {
+            var srcBadge = e.source === 'cenc'
+                ? '<span class="badge badge-src-cenc">中国地震台网</span>'
+                : '<span class="badge badge-src-usgs">USGS</span>';
+            var eventTypeHtml = e.event_type
+                ? '<span class="badge badge-event-type ' + (e.event_type === '正式测定' ? 'badge-review' : 'badge-auto') + '">' + e.event_type + '</span>'
+                : '-';
+            var intensityHtml = e.intensity_label
+                ? '<span class="intensity-tag int-' + e.intensity + '">' + e.intensity_label + '</span>'
+                : '-';
+            return '<tr>' +
+                '<td>' + (e.time||'').slice(0,19) + '</td>' +
+                '<td><span class="badge badge-m' + Math.floor(e.magnitude) + '">M' + e.magnitude + '</span></td>' +
+                '<td>' + (e.mag_type || '-') + '</td>' +
+                '<td>' + e.depth_km + '</td>' +
+                '<td><a href="/earthquake/' + encodeURIComponent(e.event_id) + '">' + (e.place || '未知') + '</a></td>' +
+                '<td>' + (e.longitude ? e.longitude.toFixed(2) : '-') + '</td>' +
+                '<td>' + (e.latitude ? e.latitude.toFixed(2) : '-') + '</td>' +
+                '<td>' + intensityHtml + '</td>' +
+                '<td>' + srcBadge + '</td>' +
+                '<td>' + eventTypeHtml + '</td>' +
+                '<td><button class="btn btn-xs btn-danger" onclick="deleteEvent(\'' + e.event_id + '\')">删除</button></td>' +
+                '</tr>';
+        }).join('');
 
         // 分页
-        let pageHtml = '';
-        for (let i = 1; i <= data.total_pages; i++) {
-            pageHtml += `<button class="btn btn-xs ${i === data.page ? 'btn-primary' : 'btn-secondary'}"
-                               onclick="doSearch(${i})">${i}</button>`;
+        var pageHtml = '';
+        for (var i = 1; i <= data.total_pages; i++) {
+            pageHtml += '<button class="btn btn-xs ' + (i === data.page ? 'btn-primary' : 'btn-secondary') +
+                        '" onclick="doSearch(' + i + ')">' + i + '</button>';
         }
         document.getElementById('pagination').innerHTML = pageHtml;
     }
@@ -110,7 +144,7 @@
             currentSort = field;
             currentSortDir = 'desc';
         }
-        doSearch(currentPage);
+        doSearch(1);
     }
 
     function resetFilters() {
@@ -123,9 +157,9 @@
     }
 
     async function deleteEvent(eventId) {
-        if (!confirm('确认删除此事件?')) return;
-        const resp = await fetch('/api/events/' + eventId, {method: 'DELETE'});
-        const r = await resp.json();
+        if (!confirm('确认删除此地震事件?')) return;
+        var resp = await fetch('/api/eq/events/' + encodeURIComponent(eventId), {method: 'DELETE'});
+        var r = await resp.json();
         if (r.ok) doSearch(currentPage);
     }
 

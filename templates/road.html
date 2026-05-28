@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}道路数据{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="panel-title" style="margin-bottom:16px;">🛣 道路数据管理 — OSM 开放路网</div>
+
+<div class="stats-row">
+    <div class="stat-card card-blue">
+        <div class="stat-value" id="stat-total">--</div>
+        <div class="stat-label">道路总条数</div>
+    </div>
+    <div class="stat-card card-teal">
+        <div class="stat-value" id="stat-length">--</div>
+        <div class="stat-label">总长度 (km)</div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- 地图 + 已加载道路渲染 -->
+    <div class="panel map-panel" style="grid-column: 1 / -1;">
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>🗺 路网地图 &nbsp;<small style="color:#999;font-weight:400;">(已加载道路实时渲染)</small></span>
+            <span>
+                <span class="badge badge-src-cenc" style="font-size:10px;">高速</span>
+                <span style="color:#F57C00;font-size:12px;margin:0 4px;">━ 国道</span>
+                <span style="color:#F9A825;font-size:12px;">━ 主干</span>
+                <span style="color:#43A047;font-size:12px;margin:0 4px;">━ 次干</span>
+                <span style="color:#1E88E5;font-size:12px;">━ 支路</span>
+                <span style="color:#90A4AE;font-size:12px;">━ 其他</span>
+            </span>
+        </div>
+        <div id="road-map" style="height:500px; border-radius:4px; position:relative;">
+                <div style="position:absolute; bottom:4px; left:4px; z-index:1000;
+                            background:rgba(255,255,255,0.9); padding:4px 10px;
+                            border-radius:4px; font-size:11px; color:#555;
+                            font-family:Consolas,monospace; pointer-events:none;
+                            box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+                    <span id="coord-display">经度 --.---- &nbsp; 纬度 --.----</span>
+                    <span style="color:#999; margin-left:6px;">|</span>
+                    <span style="color:#888;">WGS84 (EPSG:4326)</span>
+                </div>
+            </div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap;">
+            <span style="color:#888;">地图范围:</span>
+            <span id="bbox-display" style="font-weight:600;">--</span>
+            <button class="btn btn-sm btn-primary" onclick="fetchRoadBbox()">采集当前区域</button>
+            <span style="color:#888;">或直接拖动/缩放地图到目标区域后点击采集</span>
+        </div>
+    </div>
+</div>
+
+<!-- 道路列表 -->
+<div class="panel">
+    <div class="filter-row" style="margin-bottom:10px;">
+        <div class="form-group">
+            <label>路名搜索</label>
+            <input type="text" id="filter-name" placeholder="输入路名..." oninput="doSearch()">
+        </div>
+        <div class="form-group">
+            <label>道路等级</label>
+            <select id="filter-level" onchange="doSearch()">
+                <option value="">全部</option>
+                <option value="motorway">高速公路</option>
+                <option value="trunk">国道/快速路</option>
+                <option value="primary">主干道</option>
+                <option value="secondary">次干道</option>
+                <option value="tertiary">支路</option>
+                <option value="residential">居住区道路</option>
+                <option value="service">服务性道路</option>
+            </select>
+        </div>
+        <span class="total-info">共 <strong id="total-count">0</strong> 条</span>
+    </div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>道路名称</th><th>等级</th><th>路面</th><th>车道</th>
+                <th>限速</th><th>长度(m)</th><th>单行</th><th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="road-tbody"></tbody>
+    </table>
+    <div class="pagination" id="pagination"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.CURRENT_MODULE = 'road';
+    var map;
+    var roadLayerGroup;
+    var currentPage = 1;
+
+    var HIGHWAY_COLORS = {
+        'motorway':     {color: '#C41230', weight: 4, label: '高速'},
+        'trunk':        {color: '#F57C00', weight: 3.5, label: '国道/快速路'},
+        'primary':      {color: '#F9A825', weight: 3, label: '主干道'},
+        'secondary':    {color: '#43A047', weight: 2.5, label: '次干道'},
+        'tertiary':     {color: '#1E88E5', weight: 2, label: '支路'},
+        'residential':  {color: '#78909C', weight: 1.5, label: '居住区道路'},
+        'service':      {color: '#BDBDBD', weight: 1, label: '服务性道路'},
+        'default':      {color: '#9E9E9E', weight: 1, label: '未分类'},
+    };
+
+    // ---- 地图 ----
+    async function initMap() {
+        map = L.map('road-map').setView([39.12, 117.25], 12);
+        roadLayerGroup = L.layerGroup().addTo(map);
+
+        // 瓦片
+        var tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        var tileOptions = { attribution: '&copy; OpenStreetMap', maxZoom: 16 };
+        L.tileLayer(tileUrl, tileOptions).addTo(map);
+
+        // 鼠标坐标显示
+        map.on('mousemove', function(e) {
+            document.getElementById('coord-display').innerHTML =
+                '经度 ' + e.latlng.lng.toFixed(4) + ' &nbsp; 纬度 ' + e.latlng.lat.toFixed(4);
+        });
+
+        map.on('moveend', updateBbox);
+        updateBbox();
+
+        // 加载所有道路到地图
+        await loadRoadToMap();
+    }
+
+    async function loadRoadToMap() {
+        roadLayerGroup.clearLayers();
+        var resp = await fetch('/api/road/list?per_page=5000&sort_by=length_m&sort_dir=desc');
+        var data = await resp.json();
+        var count = 0;
+        var allBounds = [];
+
+        data.data.forEach(function(r) {
+            if (!r.coordinates_json || r.coordinates_json === '[]' || r.coordinates_json === '') return;
+            try {
+                var coords = JSON.parse(r.coordinates_json);
+                // OSM returns [lon, lat], Leaflet needs [lat, lon]
+                var latlngs = coords.map(function(p) { return [p[1], p[0]]; });
+                if (latlngs.length < 2) return;
+
+                // 收集坐标用于自适应视野
+                allBounds = allBounds.concat(latlngs);
+
+                var style = HIGHWAY_COLORS[r.highway_level] || HIGHWAY_COLORS['default'];
+                var line = L.polyline(latlngs, {
+                    color: style.color,
+                    weight: style.weight,
+                    opacity: 0.8,
+                }).addTo(roadLayerGroup);
+
+                var levelCn = r.highway_level_cn || style.label;
+                line.bindTooltip(
+                    (r.name || '(未命名)') + ' [' + levelCn + '] ' +
+                    (r.length_m ? r.length_m.toFixed(0) + 'm' : ''),
+                    {sticky: false, direction: 'top'}
+                );
+                line.bindPopup(
+                    '<b>' + (r.name || '(未命名)') + '</b><br>' +
+                    '等级: ' + levelCn + '<br>' +
+                    '长度: ' + (r.length_m ? r.length_m.toFixed(0) + 'm' : '-') + '<br>' +
+                    '车道: ' + (r.lanes || '-') + ' &nbsp; 路面: ' + (r.surface || '-') + '<br>' +
+                    '限速: ' + (r.max_speed ? r.max_speed + 'km/h' : '-')
+                );
+                count++;
+            } catch(e) {}
+        });
+        document.getElementById('bbox-display').textContent +=
+            ' | 已渲染 ' + count + ' 条道路';
+
+        // 自适应显示全部道路
+        if (allBounds.length > 0) {
+            map.fitBounds(allBounds, {padding: [30, 30]});
+        }
+    }
+
+    function updateBbox() {
+        var bounds = map.getBounds();
+        document.getElementById('bbox-display').textContent =
+            'S:' + bounds.getSouth().toFixed(4) +
+            ' W:' + bounds.getWest().toFixed(4) +
+            ' N:' + bounds.getNorth().toFixed(4) +
+            ' E:' + bounds.getEast().toFixed(4);
+    }
+
+    async function fetchRoadBbox() {
+        var bounds = map.getBounds();
+        var ctr = bounds.getCenter();
+        var btn = document.querySelector('#road-map').nextElementSibling.querySelector('button');
+        btn.disabled = true; btn.textContent = '采集中...';
+
+        var resp = await fetch('/api/road/fetch', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                south: bounds.getSouth(), west: bounds.getWest(),
+                north: bounds.getNorth(), east: bounds.getEast(),
+                name: '框选(' + ctr.lat.toFixed(2) + ',' + ctr.lng.toFixed(2) + ')'
+            })
+        });
+        var data = await resp.json();
+        alert(data.message);
+        location.reload();
+    }
+
+    // ---- 统计 ----
+    async function loadStats() {
+        var resp = await fetch('/api/road/stats');
+        var s = await resp.json();
+        document.getElementById('stat-total').textContent = s.total || 0;
+        document.getElementById('stat-length').textContent = (s.total_length_km || 0) + ' km';
+    }
+
+    // ---- 列表 ----
+    async function doSearch(page) {
+        if (page) currentPage = page;
+        var params = new URLSearchParams({page: currentPage, per_page: 30, sort_by: 'length_m', sort_dir: 'desc'});
+        var name = document.getElementById('filter-name').value;
+        var level = document.getElementById('filter-level').value;
+        if (name) params.set('name', name);
+        if (level) params.set('level', level);
+
+        var resp = await fetch('/api/road/list?' + params);
+        var data = await resp.json();
+        document.getElementById('total-count').textContent = data.total;
+
+        document.getElementById('road-tbody').innerHTML = data.data.map(function(r) {
+            return '<tr>' +
+                '<td><strong>' + (r.name || '(未命名)') + '</strong></td>' +
+                '<td><span class="badge badge-src-cenc">' + (r.highway_level_cn || r.highway_level) + '</span></td>' +
+                '<td>' + (r.surface || '-') + '</td>' +
+                '<td>' + (r.lanes != null ? r.lanes : '-') + '</td>' +
+                '<td>' + (r.max_speed != null ? r.max_speed + 'km/h' : '-') + '</td>' +
+                '<td>' + (r.length_m != null ? r.length_m.toFixed(0) : '-') + '</td>' +
+                '<td>' + (r.oneway === 'yes' ? '是' : '否') + '</td>' +
+                '<td><button class="btn btn-xs btn-danger" onclick="del(\'' + r.road_id + '\')">删除</button></td>' +
+                '</tr>';
+        }).join('');
+
+        var html = '';
+        for (var i = 1; i <= data.total_pages; i++) {
+            html += '<button class="btn btn-xs ' + (i === data.page ? 'btn-primary' : 'btn-secondary') +
+                    '" onclick="doSearch(' + i + ')">' + i + '</button>';
+        }
+        document.getElementById('pagination').innerHTML = html;
+    }
+
+    async function del(id) {
+        if (!confirm('确认删除?')) return;
+        await fetch('/api/road/' + encodeURIComponent(id), {method:'DELETE'});
+        doSearch(currentPage);
+        // 刷新地图
+        await loadRoadToMap();
+    }
+
+    initMap();
+    loadStats();
+    doSearch(1);
+</script>
+{% endblock %}

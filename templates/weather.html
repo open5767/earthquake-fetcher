@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}天气数据{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="panel-title" style="margin-bottom:16px;">🌤 天气数据管理 — 地图选点模式</div>
+
+<div class="stats-row">
+    <div class="stat-card card-teal">
+        <div class="stat-value" id="stat-cities">--</div>
+        <div class="stat-label">已覆盖城市/点位</div>
+    </div>
+    <div class="stat-card card-red">
+        <div class="stat-value" id="stat-records">--</div>
+        <div class="stat-label">天气记录总数</div>
+    </div>
+    <div class="stat-card card-gold">
+        <div class="stat-value" id="stat-latest">--</div>
+        <div class="stat-label">最新预报日期</div>
+    </div>
+    <div class="stat-card card-blue">
+        <div class="stat-value" id="stat-selected" style="font-size:16px;">--</div>
+        <div class="stat-label">当前选中点位</div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- 地图选点 -->
+    <div class="panel map-panel">
+        <div class="panel-title">🗺 点击地图任意位置查询天气 &nbsp;<small style="color:#999;font-weight:400;">(已标注29个预设城市)</small></div>
+        <div id="weather-map" style="height:460px; border-radius:4px; position:relative;">
+            <div style="position:absolute; bottom:4px; left:4px; z-index:1000;
+                        background:rgba(255,255,255,0.9); padding:4px 10px;
+                        border-radius:4px; font-size:11px; color:#555;
+                        font-family:Consolas,monospace; pointer-events:none;
+                        box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+                <span id="coord-display">经度 --.---- &nbsp; 纬度 --.----</span>
+                <span style="color:#999; margin-left:6px;">| WGS84</span>
+            </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#888;">
+            💡 点击地图上任一点→拉取该坐标7天预报 &nbsp;|&nbsp; 点击城市标记→查看该城市已有天气
+        </div>
+    </div>
+
+    <!-- 选中点位的天气详情 -->
+    <div class="panel" id="detail-panel">
+        <div class="panel-title">📋 <span id="detail-title">选择一个城市查看天气</span></div>
+        <div id="detail-content">
+            <p style="color:#999;padding:40px 0;text-align:center;">点击左侧地图上的城市标记<br>或点击地图任意位置查询</p>
+        </div>
+    </div>
+</div>
+
+<!-- 全部记录快捷入口 -->
+<div style="margin-top:10px; display:flex; gap:10px;">
+    <a href="/weather/list" class="btn btn-secondary btn-sm">查看全部天气记录</a>
+    <button class="btn btn-sm btn-primary" onclick="fetchAllCities()">重新拉取29城预报</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.CURRENT_MODULE = 'weather';
+    var map;
+    var cityMarkers = [];
+    var selectedLatLng = null;
+
+    async function loadWeatherMap() {
+        // 获取城市列表
+        var locResp = await fetch('/api/wx/locations');
+        var locations = await locResp.json();
+        document.getElementById('stat-cities').textContent = locations.length;
+
+        // 获取记录统计
+        var recResp = await fetch('/api/wx/records?per_page=1');
+        var recData = await recResp.json();
+        document.getElementById('stat-records').textContent = recData.total;
+        if (recData.data.length > 0) {
+            document.getElementById('stat-latest').textContent = recData.data[0].observation_time || '--';
+        }
+
+        // 初始化地图
+        map = L.map('weather-map').setView([35, 105], 4);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap', maxZoom: 12,
+        }).addTo(map);
+
+        map.on('mousemove', function(e) {
+            document.getElementById('coord-display').innerHTML =
+                '经度 ' + e.latlng.lng.toFixed(4) + ' &nbsp; 纬度 ' + e.latlng.lat.toFixed(4);
+        });
+
+        // 预设城市标记
+        locResp = await fetch('/api/wx/locations');
+        locations = await locResp.json();
+        var seen = {};
+        locations.forEach(function(loc) {
+            var key = loc.latitude.toFixed(2) + ',' + loc.longitude.toFixed(2);
+            if (seen[key]) return;
+            seen[key] = true;
+            var marker = L.marker([loc.latitude, loc.longitude])
+                .addTo(map)
+                .bindTooltip(loc.location_name, {permanent: false, direction: 'top'})
+                .bindPopup(
+                    '<b>' + loc.location_name + '</b><br>' +
+                    '记录数: ' + loc.cnt + '<br>' +
+                    '最新: ' + (loc.latest || '-').slice(0,10) +
+                    '<br><button class="btn btn-xs btn-primary" onclick="showCityWeather(\'' +
+                    loc.location_name + '\',' + loc.latitude + ',' + loc.longitude + ')">查看天气</button>'
+                );
+            marker.on('click', function() {
+                showCityWeather(loc.location_name, loc.latitude, loc.longitude);
+            });
+        });
+
+        // 点击地图任意位置拉取天气
+        map.on('click', function(e) {
+            selectedLatLng = e.latlng;
+            var lat = e.latlng.lat.toFixed(4);
+            var lng = e.latlng.lng.toFixed(4);
+
+            // 显示选中标记
+            if (window._tempMarker) map.removeLayer(window._tempMarker);
+            window._tempMarker = L.marker(e.latlng)
+                .addTo(map)
+                .bindPopup(
+                    '<b>选中位置</b><br>' +
+                    '坐标: ' + lat + ', ' + lng +
+                    '<br><button class="btn btn-xs btn-primary" onclick="fetchCustomWeather(' +
+                    e.latlng.lat + ',' + e.latlng.lng + ')">拉取7天预报</button>'
+                )
+                .openPopup();
+
+            document.getElementById('stat-selected').textContent = lat + ', ' + lng + ' (待拉取)';
+        });
+    }
+
+    async function showCityWeather(name, lat, lon) {
+        document.getElementById('stat-selected').textContent = name;
+        document.getElementById('detail-title').textContent = name + ' (' + lat.toFixed(2) + ', ' + lon.toFixed(2) + ')';
+
+        // 查询该城市的所有天气记录
+        var resp = await fetch('/api/wx/records?per_page=10&location=' + encodeURIComponent(name) + '&sort_by=observation_time&sort_dir=asc');
+        var data = await resp.json();
+
+        var html = '<table class="table"><thead><tr>' +
+            '<th>日期</th><th>最高温</th><th>最低温</th><th>降水</th><th>风速</th><th>风向</th><th>天气</th></tr></thead><tbody>';
+
+        if (data.data.length === 0) {
+            // 没有数据，显示拉取按钮
+            html += '<tr><td colspan="7" style="text-align:center;padding:20px;color:#888;">' +
+                '该城市暂无天气数据<br><br>' +
+                '<button class="btn btn-primary btn-sm" onclick="fetchCustomWeather(' + lat + ',' + lon + ',\'' + name + '\')">拉取7天预报</button>' +
+                '</td></tr>';
+        } else {
+            data.data.forEach(function(r) {
+                var precipStr = (r.precipitation != null && r.precipitation > 0)
+                    ? r.precipitation + 'mm' : '-';
+                html += '<tr>' +
+                    '<td>' + (r.observation_time||'').slice(0,10) + '</td>' +
+                    '<td style="color:#C41230;font-weight:600;">' + (r.temp_max != null ? r.temp_max + '°C' : '-') + '</td>' +
+                    '<td style="color:#1565C0;">' + (r.temp_min != null ? r.temp_min + '°C' : '-') + '</td>' +
+                    '<td>' + precipStr + '</td>' +
+                    '<td>' + (r.wind_speed != null ? r.wind_speed + 'km/h' : '-') + '</td>' +
+                    '<td>' + (r.wind_direction_cn || '-') + '</td>' +
+                    '<td>' + (r.weather_desc || r.weather_icon || '-') + '</td>' +
+                    '</tr>';
+            });
+            html += '</tbody></table>';
+            html += '<button class="btn btn-sm btn-primary" style="margin-top:6px;" onclick="fetchCustomWeather(' +
+                    lat + ',' + lon + ',\'' + name + '\')">刷新该城市7天预报</button>';
+        }
+
+        document.getElementById('detail-content').innerHTML = html;
+    }
+
+    async function fetchCustomWeather(lat, lon, name) {
+        var displayName = name || ('自定义点位 (' + lat.toFixed(2) + ', ' + lon.toFixed(2) + ')');
+        document.getElementById('detail-title').textContent = '⏳ 正在拉取 ' + displayName + '...';
+
+        try {
+            var resp = await fetch('/api/wx/fetch_point', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({lat: lat, lon: lon, name: name || '', days: 7})
+            });
+            var data = await resp.json();
+            if (data.ok) {
+                document.getElementById('detail-title').textContent = displayName + ' ✅ 拉取完成';
+                showCityWeather(data.name || name || '自定义点位', lat, lon);
+                // 刷新地图标记
+                setTimeout(function() { location.reload(); }, 500);
+            } else {
+                document.getElementById('detail-title').textContent = displayName + ' ❌ 拉取失败';
+            }
+        } catch(e) {
+            document.getElementById('detail-title').textContent = displayName + ' ❌ 网络错误';
+        }
+    }
+
+    async function fetchAllCities() {
+        if (!confirm('将拉取29个预设城市的7天预报数据，确认?')) return;
+        document.getElementById('detail-title').textContent = '⏳ 正在拉取29城市天气...';
+        var resp = await fetch('/api/wx/fetch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({days: 7})
+        });
+        var data = await resp.json();
+        if (data.ok) {
+            document.getElementById('detail-title').textContent = '✅ ' + data.message;
+            setTimeout(function() { location.reload(); }, 1000);
+        }
+    }
+
+    loadWeatherMap();
+</script>
+{% endblock %}

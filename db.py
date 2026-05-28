@@ -1,4 +1,4 @@
-"""SQLite 数据持久化 — 地震事件 CRUD"""
+"""SQLite 数据持久化 — 地震事件 CRUD，兼容 USGS + CENC 双数据源"""
 
 import sqlite3
 import os
@@ -37,16 +37,29 @@ def init_db():
                 alert TEXT,
                 tsunami INTEGER DEFAULT 0,
                 significance INTEGER DEFAULT 0,
+                intensity INTEGER DEFAULT 0,
+                intensity_label TEXT DEFAULT '',
+                report_time TEXT,
+                event_type TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_eq_time ON earthquake_events(time DESC)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_eq_mag ON earthquake_events(magnitude DESC)
-        """)
+
+        # 兼容旧表结构 — 如果缺少 CENC 字段则自动补齐
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(earthquake_events)")}
+        for col, col_type in [
+            ("intensity", "INTEGER DEFAULT 0"),
+            ("intensity_label", "TEXT DEFAULT ''"),
+            ("report_time", "TEXT"),
+            ("event_type", "TEXT DEFAULT ''"),
+        ]:
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE earthquake_events ADD COLUMN {col} {col_type}")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eq_time ON earthquake_events(time DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eq_mag ON earthquake_events(magnitude DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_eq_source ON earthquake_events(source)")
         conn.commit()
 
 
@@ -59,14 +72,17 @@ def upsert_events(events: list[dict]) -> int:
                 INSERT OR IGNORE INTO earthquake_events
                     (event_id, time, longitude, latitude, depth_km,
                      magnitude, mag_type, place, source, url,
-                     felt, cdi, mmi, alert, tsunami, significance)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     felt, cdi, mmi, alert, tsunami, significance,
+                     intensity, intensity_label, report_time, event_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 e["event_id"], e["time"], e["longitude"], e["latitude"],
                 e["depth_km"], e["magnitude"], e["mag_type"], e["place"],
                 e["source"], e["url"], e.get("felt"), e.get("cdi"),
                 e.get("mmi"), e.get("alert"), e.get("tsunami"),
                 e.get("significance"),
+                e.get("intensity", 0), e.get("intensity_label", ""),
+                e.get("report_time"), e.get("event_type", ""),
             ))
             if cur.rowcount > 0:
                 count += 1
@@ -82,6 +98,7 @@ def query_events(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     place_search: Optional[str] = None,
+    source: Optional[str] = None,
     sort_by: str = "time",
     sort_dir: str = "desc",
 ) -> tuple[list, int]:
@@ -104,10 +121,13 @@ def query_events(
     if place_search:
         where.append("place LIKE ?")
         params.append(f"%{place_search}%")
+    if source:
+        where.append("source = ?")
+        params.append(source)
 
     where_clause = " AND ".join(where)
 
-    allowed_sort = {"time", "magnitude", "depth_km", "significance"}
+    allowed_sort = {"time", "magnitude", "depth_km", "significance", "intensity"}
     if sort_by not in allowed_sort:
         sort_by = "time"
     sort_dir = "DESC" if sort_dir.lower() == "desc" else "ASC"
@@ -144,30 +164,49 @@ def delete_event(event_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def get_stats() -> dict:
+def get_stats(source: Optional[str] = None) -> dict:
     with get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM earthquake_events").fetchone()[0]
+        if source:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM earthquake_events WHERE source = ?", (source,)
+            ).fetchone()[0]
+        else:
+            total = conn.execute("SELECT COUNT(*) FROM earthquake_events").fetchone()[0]
+
         if total == 0:
-            return {"total": 0, "max_mag": 0, "min_mag": 0, "avg_depth": 0, "last_fetch": None}
+            return {
+                "total": 0, "max_mag": 0, "min_mag": 0, "avg_depth": 0,
+                "last_fetch": None, "latest_event_time": None,
+                "mag_distribution": {"m7plus": 0, "m6_7": 0, "m5_6": 0, "m4_5": 0, "m3minus": 0},
+                "source_breakdown": {},
+            }
+
+        base_where = f"WHERE source = '{source}'" if source else ""
 
         mag_stats = conn.execute(
-            "SELECT MAX(magnitude), MIN(magnitude), AVG(depth_km) FROM earthquake_events"
+            f"SELECT MAX(magnitude), MIN(magnitude), AVG(depth_km) FROM earthquake_events {base_where}"
         ).fetchone()
         last = conn.execute(
-            "SELECT MAX(time) FROM earthquake_events"
+            f"SELECT MAX(time) FROM earthquake_events {base_where}"
         ).fetchone()[0]
         last_fetch = conn.execute(
-            "SELECT MAX(created_at) FROM earthquake_events"
+            f"SELECT MAX(created_at) FROM earthquake_events {base_where}"
         ).fetchone()[0]
-        mag_dist = conn.execute("""
+        mag_dist = conn.execute(f"""
             SELECT
                 SUM(CASE WHEN magnitude >= 7.0 THEN 1 ELSE 0 END) as m7,
                 SUM(CASE WHEN magnitude >= 6.0 AND magnitude < 7.0 THEN 1 ELSE 0 END) as m6,
                 SUM(CASE WHEN magnitude >= 5.0 AND magnitude < 6.0 THEN 1 ELSE 0 END) as m5,
                 SUM(CASE WHEN magnitude >= 4.0 AND magnitude < 5.0 THEN 1 ELSE 0 END) as m4,
                 SUM(CASE WHEN magnitude < 4.0 THEN 1 ELSE 0 END) as m3
-            FROM earthquake_events
+            FROM earthquake_events {base_where}
         """).fetchone()
+
+        # 数据源分布
+        src_rows = conn.execute(
+            "SELECT source, COUNT(*) as cnt FROM earthquake_events GROUP BY source"
+        ).fetchall()
+        source_breakdown = {r["source"]: r["cnt"] for r in src_rows}
 
     return {
         "total": total,
@@ -183,16 +222,24 @@ def get_stats() -> dict:
             "m4_5": mag_dist["m4"] or 0,
             "m3minus": mag_dist["m3"] or 0,
         },
+        "source_breakdown": source_breakdown,
     }
 
 
-def get_map_data(min_mag: float = 0) -> list[dict]:
-    """获取地图标注数据（简化版，只需位置和震级）"""
+def get_map_data(min_mag: float = 0, source: Optional[str] = None) -> list[dict]:
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT event_id, time, longitude, latitude, depth_km, magnitude, place "
-            "FROM earthquake_events WHERE magnitude >= ? "
-            "ORDER BY time DESC LIMIT 500",
-            (min_mag,),
-        ).fetchall()
+        if source:
+            rows = conn.execute(
+                "SELECT event_id, time, longitude, latitude, depth_km, magnitude, place, source "
+                "FROM earthquake_events WHERE magnitude >= ? AND source = ? "
+                "ORDER BY time DESC LIMIT 500",
+                (min_mag, source),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT event_id, time, longitude, latitude, depth_km, magnitude, place, source "
+                "FROM earthquake_events WHERE magnitude >= ? "
+                "ORDER BY time DESC LIMIT 500",
+                (min_mag,),
+            ).fetchall()
     return [dict(r) for r in rows]

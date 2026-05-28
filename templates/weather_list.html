@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}天气记录列表{% endblock %}
+
+{% block content %}
+<div class="panel-title" style="margin-bottom:16px;">📋 天气记录列表</div>
+
+<div class="panel">
+    <div class="filter-row">
+        <div class="form-group">
+            <label>城市搜索</label>
+            <input type="text" id="filter-city" placeholder="输入城市名..." oninput="doSearch()">
+        </div>
+        <div class="form-group">
+            <label>起始日期</label>
+            <input type="date" id="filter-start" onchange="doSearch()">
+        </div>
+        <div class="form-group">
+            <label>结束日期</label>
+            <input type="date" id="filter-end" onchange="doSearch()">
+        </div>
+        <div class="filter-actions">
+            <button class="btn btn-secondary btn-sm" onclick="resetFilters()">重置</button>
+            <span class="total-info">共 <strong id="total-count">0</strong> 条</span>
+        </div>
+    </div>
+</div>
+
+<div class="panel">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>城市</th><th>日期</th><th>最高温</th><th>最低温</th><th>均温</th>
+                <th>降水(mm)</th><th>降水概率</th><th>风速(km/h)</th><th>风向</th>
+                <th>气压(hPa)</th><th>天气</th><th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="wx-tbody"></tbody>
+    </table>
+    <div class="pagination" id="pagination"></div>
+</div>
+
+<a href="/weather" class="btn btn-secondary btn-sm">返回天气看板</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.CURRENT_MODULE = 'weather';
+    var currentPage = 1;
+
+    async function doSearch(page) {
+        if (page) currentPage = page;
+        var params = new URLSearchParams({page: currentPage, per_page: 20, sort_by:'observation_time', sort_dir:'desc'});
+        var city = document.getElementById('filter-city').value;
+        var start = document.getElementById('filter-start').value;
+        var end = document.getElementById('filter-end').value;
+        if (city) params.set('location', city);
+        if (start) params.set('start_time', start);
+        if (end) params.set('end_time', end);
+
+        var resp = await fetch('/api/wx/records?' + params);
+        var data = await resp.json();
+        document.getElementById('total-count').textContent = data.total;
+
+        document.getElementById('wx-tbody').innerHTML = data.data.map(function(r) {
+            return '<tr>' +
+                '<td><strong>' + r.location_name + '</strong></td>' +
+                '<td>' + (r.observation_time||'').slice(0,10) + '</td>' +
+                '<td>' + (r.temp_max != null ? r.temp_max + '°C' : '-') + '</td>' +
+                '<td>' + (r.temp_min != null ? r.temp_min + '°C' : '-') + '</td>' +
+                '<td>' + (r.temperature != null ? r.temperature + '°C' : '-') + '</td>' +
+                '<td>' + (r.precipitation != null ? r.precipitation : '-') + '</td>' +
+                '<td>' + (r.precipitation_prob != null ? r.precipitation_prob + '%' : '-') + '</td>' +
+                '<td>' + (r.wind_speed != null ? r.wind_speed : '-') + '</td>' +
+                '<td>' + (r.wind_direction_cn || '-') + '</td>' +
+                '<td>' + (r.pressure != null ? r.pressure : '-') + '</td>' +
+                '<td>' + (r.weather_desc || r.weather_icon || '-') + '</td>' +
+                '<td><button class="btn btn-xs btn-danger" onclick="del(\'' + r.record_id + '\')">删除</button></td>' +
+                '</tr>';
+        }).join('');
+
+        var html = '';
+        for (var i = 1; i <= data.total_pages; i++) {
+            html += '<button class="btn btn-xs ' + (i === data.page ? 'btn-primary' : 'btn-secondary') +
+                    '" onclick="doSearch(' + i + ')">' + i + '</button>';
+        }
+        document.getElementById('pagination').innerHTML = html;
+    }
+
+    function resetFilters() {
+        document.getElementById('filter-city').value = '';
+        document.getElementById('filter-start').value = '';
+        document.getElementById('filter-end').value = '';
+        doSearch(1);
+    }
+
+    async function del(id) {
+        if (!confirm('确认删除?')) return;
+        await fetch('/api/wx/records/' + encodeURIComponent(id), {method:'DELETE'});
+        doSearch(currentPage);
+    }
+
+    doSearch(1);
+</script>
+{% endblock %}

@@ -3,48 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}地震数据管理{% endblock %}</title>
+    <title>{% block title %}仿真数据管理{% endblock %} — 仿真数据自动获取模块</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     {% block head %}{% endblock %}
 </head>
 <body>
-    <nav class="navbar">
-        <div class="nav-brand">
-            <span class="nav-icon">&#x1f30d;</span>
-            仿真数据获取模块
+    <!-- 顶部导航栏 — 中国地震台网风格 -->
+    <header class="topbar">
+        <div class="topbar-brand">
+            <div class="topbar-logo">&#x1f30d;</div>
+            <span>仿真数据自动获取模块</span>
         </div>
-        <div class="nav-links">
-            <a href="/" class="nav-link">数据看板</a>
-            <a href="/events" class="nav-link">事件列表</a>
-            <button class="btn btn-sm btn-primary" onclick="triggerFetch()" id="fetch-btn">
-                拉取最新数据
+        <nav class="topbar-nav">
+            <button class="btn btn-sm" style="background:rgba(255,255,255,0.2);color:#fff;border:1px solid rgba(255,255,255,0.3);" onclick="triggerFetch()" id="fetch-btn">
+                &#x21e9; 拉取数据
             </button>
-        </div>
-    </nav>
+        </nav>
+    </header>
 
-    <main class="main-content">
-        {% block content %}{% endblock %}
-    </main>
+    <div class="app-layout">
+        <!-- 左侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-title">数据管理</div>
+            <nav class="sidebar-nav">
+                {% for mod in modules %}
+                <a href="{{ url_for(mod.endpoint) }}"
+                   class="sidebar-item {% if request.endpoint and request.endpoint.startswith(mod.key) %}active{% endif %}">
+                    <span class="sidebar-icon">{{ mod.icon }}</span>
+                    <span>{{ mod.name }}</span>
+                </a>
+                {% endfor %}
+            </nav>
+            <div class="sidebar-footer">
+                <small>v1.0 &nbsp;|&nbsp; 数据来源: CENC / USGS / Open-Meteo</small>
+            </div>
+        </aside>
+
+        <!-- 右侧主内容区 -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 
     <!-- 拉取弹窗 -->
     <div class="modal-overlay" id="fetch-modal" style="display:none">
         <div class="modal">
-            <h3>从 USGS 拉取地震数据</h3>
-            <div class="form-group">
-                <label>时间范围 (最近 N 天)</label>
-                <input type="number" id="fetch-days" value="7" min="1" max="90">
-            </div>
-            <div class="form-group">
-                <label>最小震级</label>
-                <input type="number" id="fetch-min-mag" value="4.5" min="0" max="9" step="0.1">
-            </div>
-            <div class="form-group">
-                <label>区域</label>
-                <select id="fetch-region">
-                    <option value="global">全球</option>
-                    <option value="china">中国周边</option>
-                </select>
+            <h3>&#x1f4e1; 拉取数据</h3>
+            <div id="fetch-modal-body">
+                <!-- 动态填充 -->
             </div>
             <div class="modal-actions">
                 <button class="btn btn-secondary" onclick="closeFetchModal()">取消</button>
@@ -55,44 +62,104 @@
     </div>
 
     <script>
+        // 当前模块由子模板设置: window.CURRENT_MODULE = 'earthquake' | 'weather' | 'fault'
         function triggerFetch() {
-            document.getElementById('fetch-modal').style.display = 'flex';
+            var modal = document.getElementById('fetch-modal');
+            var body = document.getElementById('fetch-modal-body');
+            modal.style.display = 'flex';
             document.getElementById('fetch-result').style.display = 'none';
+
+            var mod = window.CURRENT_MODULE || 'earthquake';
+            if (mod === 'earthquake') {
+                body.innerHTML = `
+                    <div class="form-group"><label>数据来源</label>
+                    <select id="fetch-source" style="width:100%">
+                        <option value="cenc">中国地震台网 (CENC) — 中文地名 + 中国烈度</option>
+                        <option value="usgs">美国地质调查局 (USGS) — 全球数据</option></select></div>
+                    <div class="form-group" id="fetch-days-group"><label>时间范围 (最近 N 天)</label>
+                    <input type="number" id="fetch-days" value="7" min="1" max="90"></div>
+                    <div class="form-group"><label>最小震级</label>
+                    <input type="number" id="fetch-min-mag" value="0" min="0" max="9" step="0.1"></div>
+                    <div class="form-group" id="fetch-region-group"><label>区域</label>
+                    <select id="fetch-region"><option value="china">中国及周边</option><option value="global">全球</option></select></div>
+                `;
+                document.getElementById('fetch-source').addEventListener('change', function(){
+                    var isCenc = this.value === 'cenc';
+                    document.getElementById('fetch-days-group').style.display = isCenc ? 'none' : '';
+                    document.getElementById('fetch-region-group').style.display = isCenc ? 'none' : '';
+                });
+            } else if (mod === 'weather') {
+                body.innerHTML = `
+                    <div class="form-group"><label>预报天数</label>
+                    <input type="number" id="fetch-days" value="7" min="1" max="16"></div>
+                    <p style="font-size:12px;color:#888;">将拉取 29 个中国省会/直辖市城市未来天气数据 (Open-Meteo 免费 API)</p>
+                `;
+            } else if (mod === 'fault') {
+                body.innerHTML = `
+                    <p style="font-size:13px;color:#555;">断层数据为预置的中国 10 条主要活动断裂带参考数据。</p>
+                    <p style="font-size:12px;color:#888;">如需完整数据，请通过国家地震科学数据中心 (data.earthquake.cn) 下载后导入。</p>
+                `;
+                document.getElementById('fetch-confirm-btn').style.display = 'none';
+            } else if (mod === 'road') {
+                body.innerHTML = `
+                    <p style="font-size:13px;color:#555;">道路数据从 OpenStreetMap 免费获取。</p>
+                    <p style="font-size:12px;color:#888;">请在道路页面地图上直接框选或点击区域采集，无需在此操作。</p>
+                `;
+                document.getElementById('fetch-confirm-btn').style.display = 'none';
+            } else if (mod === 'zone') {
+                body.innerHTML = `
+                    <p style="font-size:13px;color:#555;">加载中国省级行政区划边界 + 抗震设防等级。</p>
+                    <p style="font-size:12px;color:#888;">数据来源: GADM (gadm.org) + GB 18306-2015 全国地震动参数区划图。</p>
+                    <p style="font-size:12px;color:#888;">点击下方按钮开始加载。</p>
+                `;
+            }
         }
+
         function closeFetchModal() {
             document.getElementById('fetch-modal').style.display = 'none';
+            document.getElementById('fetch-confirm-btn').style.display = '';
         }
+
         async function doFetch() {
-            const btn = document.getElementById('fetch-confirm-btn');
-            const resultEl = document.getElementById('fetch-result');
-            btn.disabled = true;
-            btn.textContent = '拉取中...';
+            var mod = window.CURRENT_MODULE || 'earthquake';
+            var btn = document.getElementById('fetch-confirm-btn');
+            var resultEl = document.getElementById('fetch-result');
+            btn.disabled = true; btn.textContent = '拉取中...';
             resultEl.style.display = 'none';
 
+            var url, body = {};
+            if (mod === 'earthquake') {
+                url = '/api/eq/fetch';
+                var src = document.getElementById('fetch-source').value;
+                body.source = src;
+                body.min_mag = parseFloat(document.getElementById('fetch-min-mag').value);
+                if (src !== 'cenc') {
+                    body.days = parseInt(document.getElementById('fetch-days').value);
+                    body.region = document.getElementById('fetch-region').value;
+                }
+            } else if (mod === 'weather') {
+                url = '/api/wx/fetch';
+                body.days = parseInt(document.getElementById('fetch-days').value);
+            } else if (mod === 'zone') {
+                url = '/api/zone/load';
+            }
+
             try {
-                const resp = await fetch('/api/fetch', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        days: parseInt(document.getElementById('fetch-days').value),
-                        min_mag: parseFloat(document.getElementById('fetch-min-mag').value),
-                        region: document.getElementById('fetch-region').value,
-                    })
-                });
-                const data = await resp.json();
+                var resp = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+                var data = await resp.json();
                 resultEl.style.display = 'block';
                 if (data.ok) {
-                    resultEl.innerHTML = `<div class="alert alert-success">${data.message}</div>`;
-                    setTimeout(() => location.reload(), 1500);
+                    resultEl.innerHTML = '<div class="alert alert-success">' + data.message + '</div>';
+                    setTimeout(function(){ location.reload(); }, 1500);
                 } else {
-                    resultEl.innerHTML = `<div class="alert alert-error">拉取失败</div>`;
+                    resultEl.innerHTML = '<div class="alert alert-error">拉取失败</div>';
                 }
-            } catch (err) {
+            } catch(e) {
                 resultEl.style.display = 'block';
-                resultEl.innerHTML = `<div class="alert alert-error">网络错误: ${err.message}</div>`;
+                resultEl.innerHTML = '<div class="alert alert-error">网络错误: ' + e.message + '</div>';
             } finally {
-                btn.disabled = false;
-                btn.textContent = '开始拉取';
+                btn.disabled = false; btn.textContent = '开始拉取';
+                document.getElementById('fetch-confirm-btn').style.display = '';
             }
         }
     </script>

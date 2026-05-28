@@ -1,57 +1,77 @@
 {% extends "base.html" %}
-{% block title %}数据看板 - 地震数据管理{% endblock %}
+{% block title %}数据看板{% endblock %}
 
 {% block head %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 {% endblock %}
 
 {% block content %}
+<!-- 数据源切换标签 -->
+<div class="source-tabs">
+    <button class="source-tab active" onclick="switchSource('all', this)">全部数据</button>
+    <button class="source-tab" onclick="switchSource('cenc', this)">中国地震台网</button>
+    <button class="source-tab" onclick="switchSource('usgs', this)">USGS</button>
+</div>
+
+<!-- 统计卡片 -->
 <div class="stats-row" id="stats-row">
-    <div class="stat-card">
-        <div class="stat-value" id="stat-total">--</div>
+    <div class="stat-card card-red">
+        <div class="stat-value val-red" id="stat-total">--</div>
         <div class="stat-label">地震事件总数</div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card card-gold">
         <div class="stat-value" id="stat-max-mag">--</div>
         <div class="stat-label">最大震级</div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card card-blue">
         <div class="stat-value" id="stat-min-mag">--</div>
         <div class="stat-label">最小震级</div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card card-teal">
         <div class="stat-value" id="stat-avg-depth">--</div>
         <div class="stat-label">平均震源深度 (km)</div>
     </div>
-    <div class="stat-card">
-        <div class="stat-value" id="stat-latest">--</div>
+    <div class="stat-card card-gray">
+        <div class="stat-value" id="stat-latest" style="font-size:14px;">--</div>
         <div class="stat-label">最近事件时间</div>
     </div>
 </div>
 
 <div class="dashboard-grid">
-    <!-- 地图 -->
+    <!-- 震中分布地图 -->
     <div class="panel map-panel">
-        <h3>&#x1f5fa; 地震分布图</h3>
-        <div id="map" style="height:450px; border-radius:8px;"></div>
+        <div class="panel-title">震中分布图</div>
+        <div id="map" style="height:460px; border-radius:4px; position:relative;">
+            <div style="position:absolute; bottom:4px; left:4px; z-index:1000;
+                        background:rgba(255,255,255,0.9); padding:4px 10px;
+                        border-radius:4px; font-size:11px; color:#555;
+                        font-family:Consolas,monospace; pointer-events:none;
+                        box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+                <span id="coord-display">经度 --.---- &nbsp; 纬度 --.----</span>
+                <span style="color:#999; margin-left:6px;">| WGS84</span>
+            </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#999;" id="map-legend">
+            &nbsp;● <span style="color:#C41230;">M≥7</span> &nbsp;● <span style="color:#F57C00;">M6-7</span> &nbsp;● <span style="color:#F9A825;">M5-6</span> &nbsp;● <span style="color:#43A047;">M4-5</span> &nbsp;● <span style="color:#1E88E5;">M&lt;4</span>
+        </div>
     </div>
 
-    <!-- 震级分布 -->
+    <!-- 右侧: 震级分布 + 数据源占比 -->
     <div class="panel">
-        <h3>&#x1f4ca; 震级分布</h3>
-        <div id="mag-dist">
-
-        </div>
+        <div class="panel-title">震级分布</div>
+        <div id="mag-dist"></div>
+        <div class="panel-title" style="margin-top:20px;">数据来源</div>
+        <div id="source-dist"></div>
     </div>
 </div>
 
 <!-- 最近事件 -->
 <div class="panel">
-    <h3>&#x1f553; 最近地震事件</h3>
+    <div class="panel-title">最近地震事件</div>
     <table class="table" id="recent-table">
         <thead>
             <tr>
-                <th>时间</th><th>震级</th><th>深度 (km)</th><th>地点</th><th>操作</th>
+                <th>发震时刻</th><th>震级</th><th>深度 (km)</th><th>参考位置</th><th>数据来源</th><th>操作</th>
             </tr>
         </thead>
         <tbody></tbody>
@@ -61,10 +81,21 @@
 
 {% block scripts %}
 <script>
+    window.CURRENT_MODULE = 'earthquake';
+    var currentSource = 'all';
+
+    function switchSource(src, el) {
+        currentSource = src;
+        document.querySelectorAll('.source-tab').forEach(function(t) { t.classList.remove('active'); });
+        if (el) el.classList.add('active');
+        loadAll();
+    }
+
     // ---- 加载统计数据 ----
     async function loadStats() {
-        const resp = await fetch('/api/stats');
-        const s = await resp.json();
+        var params = currentSource !== 'all' ? '?source=' + currentSource : '';
+        var resp = await fetch('/api/eq/stats' + params);
+        var s = await resp.json();
         document.getElementById('stat-total').textContent = s.total || 0;
         document.getElementById('stat-max-mag').textContent = 'M' + (s.max_mag || 0);
         document.getElementById('stat-min-mag').textContent = 'M' + (s.min_mag || 0);
@@ -72,102 +103,114 @@
         if (s.latest_event_time) {
             document.getElementById('stat-latest').textContent = s.latest_event_time.slice(0, 16);
         } else {
-            document.getElementById('stat-latest').textContent = '无数据';
+            document.getElementById('stat-latest').textContent = '暂无数据';
         }
 
         // 震级分布
         if (s.mag_distribution) {
-            const d = s.mag_distribution;
-            document.getElementById('mag-dist').innerHTML = `
-                <div class="dist-bar"><span class="dist-label">M ≥ 7.0</span>
-                    <div class="dist-fill" style="width:${Math.max(d.m7plus*10, 2)}%">${d.m7plus}</div></div>
-                <div class="dist-bar"><span class="dist-label">M 6.0~6.9</span>
-                    <div class="dist-fill" style="width:${Math.max(d.m6_7*10, 2)}%">${d.m6_7}</div></div>
-                <div class="dist-bar"><span class="dist-label">M 5.0~5.9</span>
-                    <div class="dist-fill" style="width:${Math.max(d.m5_6*10, 2)}%">${d.m5_6}</div></div>
-                <div class="dist-bar"><span class="dist-label">M 4.0~4.9</span>
-                    <div class="dist-fill" style="width:${Math.max(d.m4_5*10, 2)}%">${d.m4_5}</div></div>
-                <div class="dist-bar"><span class="dist-label">M &lt; 4.0</span>
-                    <div class="dist-fill" style="width:${Math.max(d.m3minus*10, 2)}%">${d.m3minus}</div></div>
-            `;
+            var d = s.mag_distribution;
+            var maxCount = Math.max(d.m7plus, d.m6_7, d.m5_6, d.m4_5, d.m3minus, 1);
+            document.getElementById('mag-dist').innerHTML =
+                '<div class="dist-bar"><span class="dist-label">M ≥ 7.0</span>' +
+                '<div class="dist-fill" style="width:' + Math.max(d.m7plus/maxCount*100, 3) + '%">' + d.m7plus + ' 条</div></div>' +
+                '<div class="dist-bar"><span class="dist-label">M 6.0~6.9</span>' +
+                '<div class="dist-fill fill-orange" style="width:' + Math.max(d.m6_7/maxCount*100, 3) + '%">' + d.m6_7 + ' 条</div></div>' +
+                '<div class="dist-bar"><span class="dist-label">M 5.0~5.9</span>' +
+                '<div class="dist-fill" style="width:' + Math.max(d.m5_6/maxCount*100, 3) + '%">' + d.m5_6 + ' 条</div></div>' +
+                '<div class="dist-bar"><span class="dist-label">M 4.0~4.9</span>' +
+                '<div class="dist-fill fill-green" style="width:' + Math.max(d.m4_5/maxCount*100, 3) + '%">' + d.m4_5 + ' 条</div></div>' +
+                '<div class="dist-bar"><span class="dist-label">M &lt; 4.0</span>' +
+                '<div class="dist-fill fill-blue" style="width:' + Math.max(d.m3minus/maxCount*100, 3) + '%">' + d.m3minus + ' 条</div></div>';
+        }
+
+        // 数据源占比
+        if (s.source_breakdown) {
+            var html = '';
+            for (var key in s.source_breakdown) {
+                var label = key === 'cenc' ? '中国地震台网' : key === 'usgs' ? 'USGS' : key;
+                var cls = key === 'cenc' ? 'badge-src-cenc' : 'badge-src-usgs';
+                html += '<div style="margin:6px 0;display:flex;align-items:center;gap:8px;">' +
+                    '<span class="badge ' + cls + '">' + label + '</span>' +
+                    '<span style="font-weight:700;">' + s.source_breakdown[key] + ' 条</span></div>';
+            }
+            document.getElementById('source-dist').innerHTML = html || '<div style="color:#999;">暂无数据</div>';
         }
     }
 
     // ---- 加载地图 ----
+    var map;
     async function loadMap() {
-        const resp = await fetch('/api/map?min_mag=3');
-        const events = await resp.json();
+        var params = currentSource !== 'all' ? '?source=' + currentSource : '';
+        var resp = await fetch('/api/eq/map?min_mag=0' + (currentSource !== 'all' ? '&source=' + currentSource : ''));
+        var events = await resp.json();
 
-        const map = L.map('map').setView([25, 105], 3);
+        if (map) { map.remove(); }
+        map = L.map('map').setView([32, 108], 4);
 
-        // 优先使用本地缓存瓦片(内网离线)，不可用时回退在线 OSM
-        let tileUrl, tileOptions;
-        try {
-            const ts = await fetch('/api/tile-status');
-            const tileStatus = await ts.json();
-            if (tileStatus.available) {
-                tileUrl = '/tiles/{z}/{x}/{y}.png';
-                tileOptions = {
-                    attribution: '&copy; OpenStreetMap (本地缓存)',
-                    maxZoom: 12,
-                };
-                console.log('地图: 离线模式 (' + tileStatus.count + ' 个本地瓦片)');
-            } else {
-                throw new Error('no cache');
-            }
-        } catch (e) {
-            tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-            tileOptions = {
-                attribution: '&copy; OpenStreetMap (在线)',
-                maxZoom: 12,
-            };
-            console.log('地图: 在线模式');
-        }
-        L.tileLayer(tileUrl, tileOptions).addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap', maxZoom: 12,
+        }).addTo(map);
 
-        events.forEach(e => {
-            const size = Math.max(6, e.magnitude * 5);
-            const color = e.magnitude >= 7 ? '#d32f2f' :
-                          e.magnitude >= 6 ? '#f57c00' :
-                          e.magnitude >= 5 ? '#fbc02d' :
-                          e.magnitude >= 4 ? '#388e3c' : '#1976d2';
+        map.on('mousemove', function(e) {
+            document.getElementById('coord-display').innerHTML =
+                '经度 ' + e.latlng.lng.toFixed(4) + ' &nbsp; 纬度 ' + e.latlng.lat.toFixed(4);
+        });
+
+        events.forEach(function(e) {
+            var size = Math.max(7, e.magnitude * 5);
+            var color = e.magnitude >= 7 ? '#C41230' :
+                        e.magnitude >= 6 ? '#F57C00' :
+                        e.magnitude >= 5 ? '#F9A825' :
+                        e.magnitude >= 4 ? '#43A047' : '#1E88E5';
+            var srcLabel = e.source === 'cenc' ? '中国地震台网' : 'USGS';
             L.circleMarker([e.latitude, e.longitude], {
                 radius: size,
                 fillColor: color,
                 color: '#fff',
-                weight: 1,
-                fillOpacity: 0.7,
+                weight: 1.5,
+                fillOpacity: 0.75,
             }).addTo(map)
-              .bindPopup(`<b>M${e.magnitude}</b> ${e.depth_km}km<br>${e.place}<br>${e.time.slice(0, 19)}`);
+              .bindPopup('<b>M' + e.magnitude + '</b> &nbsp; ' + e.place + '<br>' +
+                         '深度: ' + e.depth_km + ' km &nbsp; 时间: ' + (e.time||'').slice(0,19) +
+                         '<br>来源: ' + srcLabel);
         });
     }
 
     // ---- 最近事件表 ----
     async function loadRecent() {
-        const resp = await fetch('/api/events?per_page=10&sort_by=time&sort_dir=desc');
-        const data = await resp.json();
-        const tbody = document.querySelector('#recent-table tbody');
-        tbody.innerHTML = data.data.map(e => `
-            <tr>
-                <td>${e.time.slice(0, 19)}</td>
-                <td><span class="badge badge-m${Math.floor(e.magnitude)}">M${e.magnitude}</span></td>
-                <td>${e.depth_km}</td>
-                <td><a href="/events/${e.event_id}">${e.place}</a></td>
-                <td><button class="btn btn-xs btn-danger" onclick="deleteEvent('${e.event_id}')">删除</button></td>
-            </tr>
-        `).join('');
+        var params = '?per_page=10&sort_by=time&sort_dir=desc';
+        if (currentSource !== 'all') params += '&source=' + currentSource;
+        var resp = await fetch('/api/eq/events' + params);
+        var data = await resp.json();
+        var tbody = document.querySelector('#recent-table tbody');
+        tbody.innerHTML = data.data.map(function(e) {
+            var srcBadge = e.source === 'cenc'
+                ? '<span class="badge badge-src-cenc">中国地震台网</span>'
+                : '<span class="badge badge-src-usgs">USGS</span>';
+            return '<tr>' +
+                '<td>' + (e.time||'').slice(0,19) + '</td>' +
+                '<td><span class="badge badge-m' + Math.floor(e.magnitude) + '">M' + e.magnitude + '</span></td>' +
+                '<td>' + e.depth_km + '</td>' +
+                '<td><a href="/earthquake/' + encodeURIComponent(e.event_id) + '">' + (e.place || '未知') + '</a></td>' +
+                '<td>' + srcBadge + '</td>' +
+                '<td><button class="btn btn-xs btn-danger" onclick="deleteEvent(\'' + e.event_id + '\')">删除</button></td>' +
+                '</tr>';
+        }).join('');
     }
 
     async function deleteEvent(eventId) {
-        if (!confirm('确认删除此事件?')) return;
-        const resp = await fetch('/api/events/' + eventId, {method: 'DELETE'});
-        const r = await resp.json();
-        if (r.ok) location.reload();
+        if (!confirm('确认删除此地震事件?')) return;
+        var resp = await fetch('/api/eq/events/' + encodeURIComponent(eventId), {method: 'DELETE'});
+        var r = await resp.json();
+        if (r.ok) loadAll();
     }
 
-    // ---- init ----
-    loadStats();
-    loadMap();
-    loadRecent();
+    function loadAll() {
+        loadStats();
+        loadMap();
+        loadRecent();
+    }
+
+    loadAll();
 </script>
 {% endblock %}
